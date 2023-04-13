@@ -1,0 +1,438 @@
+---
+title: "Subsample and run analysis"
+output: html_notebook
+---
+
+Randomly selecting only 5 animals from each cohort and running the analyses again to ensure that my results aren't due to sample size differences between cohorts.
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+#load libraries 
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggfortify)
+library(ggrepel)
+library(GGally)
+library(viridis)
+library(readxl)
+library(car)
+library(gridExtra)
+library(ggpubr)
+library(DESeq2)
+library(EnhancedVolcano)
+library(DOSE)
+library(enrichplot)
+library(ggpubr)
+library(UpSetR)
+library(scales)
+library(stringi)
+library(SuperExactTest)
+library(RRHO2)
+library(clusterProfiler)
+```
+
+#import functions
+```{r}
+source("{dir}/Functions/DESeq_DEGs.R")
+source("{dir}/Functions/convert_voleToMouse_geneIDs.R")
+source("{dir}/Functions/plot_GOanlaysis.R")
+```
+
+#import sequencing data for inputs and column data 
+```{r}
+metrics <- read_excel("{dir}/Input_RNAseq_metrics.xlsx", sheet = "Correct order prelim")
+metrics <- mutate_at(metrics, vars("Animal", "Cohort", "Pairing", "Timepoint", "Separation", "ProcessingGroup", "PPrefCat", "DissectionOrder", "CageChange", "ParentCode", "PairingAgeCat", "SACAgeCat", "RIN", "InputRNACat", "TRAP", "InputRNA", "RPCollapsed"), as.factor)
+#remove animal 2945 that had a ppref <50%
+metrics <- metrics %>% dplyr::slice(-c(12))
+
+inputs <- read.csv("{dir}/Merged all_inputs.txt", stringsAsFactors=FALSE)
+inputs <- inputs %>% filter_all(all_vars(.>10)) %>% distinct(genes, .keep_all = TRUE) %>% filter(!is.na(genes)) %>% column_to_rownames("genes")
+#remove animal 2945
+inputs <- inputs %>% dplyr::select(-c(12))
+```
+
+#select a subset of 5 aniamls from each SS cohort and 6 animals from each OS cohort
+```{r}
+ss_metrics <- metrics %>% filter(Pairing == "SS") %>% group_by(Cohort) %>% sample_n(5)
+os_metrics <- metrics %>% filter(Pairing == "OS") %>% group_by(Cohort) %>% sample_n(6)
+metrics_subsample <- rbind(ss_metrics, os_metrics) %>% arrange(desc(Timepoint))
+subsample_animals <- as.vector(metrics_subsample$Animal)
+inputs_subsample <- inputs %>% dplyr::select(contains(subsample_animals))
+
+#the metrics animals and the inputs animals are still all in the same order and each SS cohort has 5 animals and each OS cohort has 6 animals
+```
+
+#run DESeq on subset data
+```{r}
+dds_ss <- DESeqDataSetFromMatrix(countData = inputs_subsample, colData = metrics_subsample, design = ~ParentCode + PairingAgeCat + Cohort)
+dds_ss <- DESeq(dds_ss)
+
+res.48P_ss <- results(dds_ss, contrast = c("Cohort", "OS48P", "SS48P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.48I_ss <- results(dds_ss, contrast = c("Cohort", "OS48I", "SS48I"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4P_ss <- results(dds_ss, contrast = c("Cohort", "OS4P", "SS4P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4I_ss <- results(dds_ss, contrast = c("Cohort", "OS4I", "SS4I"), alpha = 0.05, pAdjustMethod = "fdr")
+
+#for collapsed pair bond
+dds.collapsed_ss <- DESeqDataSetFromMatrix(countData = inputs_subsample, colData = metrics_subsample, design = ~ParentCode + PairingAgeCat + RPCollapsed)
+dds.collapsed_ss <- DESeq(dds.collapsed_ss)
+
+res.collapsed_ss <- results(dds.collapsed_ss, contrast = c("RPCollapsed", "OSP", "SSP"), alpha = 0.05, pAdjustMethod = "fdr")
+
+#results data frames
+res.48P_ss.df <- as.data.frame(res.48P_ss) %>% rownames_to_column("genes")
+res.48I_ss.df <- as.data.frame(res.48I_ss) %>% rownames_to_column("genes")
+res.4P_ss.df <- as.data.frame(res.4P_ss) %>% rownames_to_column("genes")
+res.4I_ss.df <- as.data.frame(res.4I_ss) %>% rownames_to_column("genes")
+res.collapsed_ss.df <- as.data.frame(res.collapsed_ss) %>% rownames_to_column("genes")
+```
+
+#plot volcano plots with subsampled data
+```{r}
+#res.48P
+P48_pvalue <- EnhancedVolcano(res.48P_ss, lab = NA, x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+
+#res.4P
+P4_pvalue <- EnhancedVolcano(res.4P_ss, lab = NA, x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+
+#res.collapsed
+col_pvalue <- EnhancedVolcano(res.collapsed_ss, lab = NA, x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+
+
+#res.48I
+I48_pvalue <- EnhancedVolcano(res.48I_ss, lab = NA, x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+
+
+#res.4I
+I4_pvalue <- EnhancedVolcano(res.4I_ss, lab = NA, x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+
+```
+
+
+#make dfs of the up and downregulated genes for each DESeq results df
+```{r}
+degs.48P <- deg(res.48P_ss.df)
+degs.48I <- deg(res.48I_ss.df)
+degs.4P <- deg(res.4P_ss.df)
+degs.4I <- deg(res.4I_ss.df)
+degs.collapsed <- deg(res.collapsed_ss.df)
+
+savedegs(degs.48I, "{dir}/2021_10_18_subsampledDEGs")
+savedegs(degs.48P, "{dir}/2021_10_18_subsampledDEGs")
+savedegs(degs.4P, "{dir}/2021_10_18_subsampledDEGs")
+savedegs(degs.4I, "{dir}/2021_10_18_subsampledDEGs")
+savedegs(degs.collapsed, "{dir}/2021_10_18_subsampledDEGs")
+```
+
+#RRHO analysis for subsampled data
+```{r}
+OSvSS48I <- res.48I_ss.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS48P <- res.48P_ss.df[, c (1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS4I <- res.4I_ss.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS4P <- res.4P_ss.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+PBcol <- res.collapsed_ss.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+
+#make dfs that only have gene name and rankValue
+OSvSS48I <- OSvSS48I[,c(1,4)]
+OSvSS48P <- OSvSS48P[,c(1,4)]
+OSvSS4I <- OSvSS4I[,c(1,4)]
+OSvSS4P <- OSvSS4P[,c(1,4)]
+PBcol <- PBcol[,c(1,4)]
+```
+
+RRHO2 for each timepoint
+```{r}
+OSvSS.paired.pvalue <- RRHO2_initialize(OSvSS4P, OSvSS48P, labels = c("OS vs SS Paired at 4wks", "OS vs SS Paired at 48hrs"), stepsize = 100, boundary = 0.02)
+OSvSS.paired.fisher <- RRHO2_initialize(OSvSS4P, OSvSS48P, labels = c("Long-term pair bond", "Short-term pair bond"), stepsize = 100, boundary = 0.02, method = "fisher")
+
+OSvSS.col.ST <- RRHO2_initialize(PBcol, OSvSS48I, labels = c("OS vs SS collasped pair bond", "OS vs SS Short-term separation"), stepsize = 100, boundary = 0.02)
+OSvSS.col.ST.fisher <- RRHO2_initialize(PBcol, OSvSS48I, labels = c("Combined pair bond", "Short-term partner separation"), stepsize = 100, boundary = 0.02, method = "fisher")
+
+OSvSS.col.LT <- RRHO2_initialize(PBcol, OSvSS4I, labels = c("OS vs SS collasped pair bond", "OS vs SS long-term separation"), stepsize = 100, boundary = 0.02)
+OSvSS.col.LT.fisher <- RRHO2_initialize(PBcol, OSvSS4I, labels = c("Combined pair bond", "Long-term partner separation"), stepsize = 100, boundary = 0.02, method = "fisher")
+
+
+#plots
+RRHO2_heatmap(OSvSS.paired.pvalue, minimum = 1, colorGradient = viridis(101, option = "A"))
+RRHO2_heatmap(OSvSS.col.ST, minimum = 1, colorGradient = viridis(101, option = "A"))
+RRHO2_heatmap(OSvSS.col.LT, minimum = 1, colorGradient = viridis(101, option = "A"))
+
+
+pdf("OSvSS.paired.pvalue_unscaled_subsampled.pdf", width = 6.5, height = 5, onefile = TRUE)
+RRHO2_heatmap(OSvSS.paired.pvalue, minimum = 1, colorGradient = viridis(101, option = "A"))
+dev.off()
+pdf("OSvSS.col.ST.pvalue_unscaled_subsampled.pdf", width = 6.5, height = 5, onefile = TRUE)
+RRHO2_heatmap(OSvSS.col.ST, minimum = 1, colorGradient = viridis(101, option = "A"))
+dev.off()
+pdf("OSvSS.col.LT.pvalue_unscaled_subsampled.pdf", width = 6.5, height = 5, onefile = TRUE)
+RRHO2_heatmap(OSvSS.col.LT, minimum = 1, colorGradient = viridis(101, option = "A"))
+dev.off()
+```
+
+Use GO to determine how similar the terms are between all of the data and the subsampled data
+#import mouse genome for converting ids
+```{r}
+mart_export_PVEnsembl_mouseEnsembl_mousegeneName <- read.csv("{dir}/mart_export_PVEnsembl_mouseEnsembl_mousegeneName.txt", stringsAsFactors=FALSE)
+
+#getting a biomart df that only contains rows that have mouse stable IDs 
+biomart_mouseE <- filter(mart_export_PVEnsembl_mouseEnsembl_mousegeneName, trimws(Mouse.gene.stable.ID) !="")
+```
+
+First I want to check the GO terms for the collapsed pair bond degs because those are the ones I use to "set" the rest of my GO term analysis.
+```{r}
+go.collapsed.up.degs <- as.data.frame(degs.collapsed$upreg_DEGs_genesonly)
+go.collapsed.down.degs <- as.data.frame(degs.collapsed$downreg_DEGs_genesonly)
+
+#convert vole to mouse gene names for GO
+go.collapsed.up.degs <- vole_to_mouse(go.collapsed.up.degs)
+go.collapsed.down.degs <- vole_to_mouse(go.collapsed.down.degs)
+```
+
+make GO term dotplots for Remain paired cohorts
+```{r}
+#I previously determined that Biological Processes is the best category for GO
+go.colPBond.up.plot.bp <- enrichGO(go.collapsed.up.degs$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+go.colPBond.down.plot.bp <- enrichGO(go.collapsed.down.degs$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+
+#plot
+barplot(go.colPBond.up.plot.bp, showCategory =  20)
+barplot(go.colPBond.down.plot.bp, showCategory = 20)
+```
+These GO terms look pretty similar to the "real" data
+These are the rows I chose from the "true" data: 
+forplot.go.colPB.up <- go.colPB.up.plot.bp[c(2,3,7,9,12,15,16,18,34,58),]
+forplot.go.colPB.down <- go.colPB.down.plot.bp[c(4, 6, 7:9, 13:15, 31, 76),]
+
+what are those terms in the current subsampled GO
+```{r}
+sub.go.colPBond_up <- go.colPBond.up.plot.bp[c(2,3,7,9,12,15,16,18,34,58),]
+#well even though the top 3 terms don't say "glia" the terms are associated with Olig2, Gfap, and PDGFRa
+sub.go.colPBond_down <- go.colPBond.down.plot.bp[c(4, 6, 7:9, 13:15, 31, 76),]
+```
+
+Now let's determine what GO terms are associated with the RRHO quadrants when using the subsampled data.  
+make character vectors of overlapping genes from all quandrants
+```{r}
+#OSvSS.paired.pvalue
+OSvSS.paired.UU <- OSvSS.paired.pvalue[["genelist_uu"]][["gene_list_overlap_uu"]]
+OSvSS.paired.DD <- OSvSS.paired.pvalue[["genelist_dd"]][["gene_list_overlap_dd"]]
+OSvSS.paired.UD <- OSvSS.paired.pvalue[["genelist_ud"]][["gene_list_overlap_ud"]]
+OSvSS.paired.DU <- OSvSS.paired.pvalue[["genelist_du"]][["gene_list_overlap_du"]]
+
+#collapsed PBond vs ST
+colPB.ST.UU <- OSvSS.col.ST[["genelist_uu"]][["gene_list_overlap_uu"]]
+colPB.ST.DD <- OSvSS.col.ST[["genelist_dd"]][["gene_list_overlap_dd"]]
+colPB.ST.UD <- OSvSS.col.ST[["genelist_ud"]][["gene_list_overlap_ud"]]
+colPB.ST.DU <- OSvSS.col.ST[["genelist_du"]][["gene_list_overlap_du"]]
+
+#collapsed PBond vs LT
+colPB.LT.UU <- OSvSS.col.LT[["genelist_uu"]][["gene_list_overlap_uu"]]
+colPB.LT.DD <- OSvSS.col.LT[["genelist_dd"]][["gene_list_overlap_dd"]]
+colPB.LT.UD <- OSvSS.col.LT[["genelist_ud"]][["gene_list_overlap_ud"]]
+colPB.LT.DU <- OSvSS.col.LT[["genelist_du"]][["gene_list_overlap_du"]]
+```
+
+prepare dfs for GO analysis
+```{r}
+#OSvSS.paired
+OSvSS.paired.UU.df <- as.data.frame(OSvSS.paired.UU) %>% dplyr::rename("genes" = 1)
+OSvSS.paired.DD.df <- as.data.frame(OSvSS.paired.DD) %>% dplyr::rename("genes" = 1)
+OSvSS.paired.UD.df <- as.data.frame(OSvSS.paired.UD) %>% dplyr::rename("genes" = 1)
+OSvSS.paired.DU.df<- as.data.frame(OSvSS.paired.DU) %>% dplyr::rename("genes" = 1)
+
+#collapsed PBond vs ST
+colPB.ST.UU.df <- as.data.frame(colPB.ST.UU) %>% dplyr::rename("genes" = 1)
+colPB.ST.DD.df <- as.data.frame(colPB.ST.DD) %>% dplyr::rename("genes" = 1)
+colPB.ST.UD.df <- as.data.frame(colPB.ST.UD) %>% dplyr::rename("genes" = 1)
+colPB.ST.DU.df <- as.data.frame(colPB.ST.DU) %>% dplyr::rename("genes" = 1)
+
+#collapsed PBond vs LT
+colPB.LT.UU.df <- as.data.frame(colPB.LT.UU) %>% dplyr::rename("genes" = 1)
+colPB.LT.DD.df <- as.data.frame(colPB.LT.DD) %>% dplyr::rename("genes" = 1)
+colPB.LT.UD.df <- as.data.frame(colPB.LT.UD) %>% dplyr::rename("genes" = 1)
+colPB.LT.DU.df <- as.data.frame(colPB.LT.DU) %>% dplyr::rename("genes" = 1)
+```
+
+convert vole to mouse gene names
+```{r}
+#for UU quads 
+forGO.OSvSS.paired.UU <- vole_to_mouse(OSvSS.paired.UU.df)
+forGO.colPB.ST.UU <- vole_to_mouse(colPB.ST.UU.df)
+forGO.colPB.LT.UU <- vole_to_mouse(colPB.LT.UU.df)
+
+#for DD quads
+forGO.OSvSS.paired.DD <- vole_to_mouse(OSvSS.paired.DD.df)
+forGO.colPB.ST.DD <- vole_to_mouse(colPB.ST.DD.df)
+forGO.colPB.LT.DD <- vole_to_mouse(colPB.LT.DD.df)
+```
+
+make GO term dotplots for UU quads
+```{r}
+#I previously determined that Biological Processes is the best category for GO
+OSvSS.paired.UU.plot.bp <- enrichGO(forGO.OSvSS.paired.UU$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+colPB.ST.UU.plot.bp <- enrichGO(forGO.colPB.ST.UU$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+colPB.LT.UU.plot.bp <- enrichGO(forGO.colPB.LT.UU$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+
+#plot
+barplot(OSvSS.paired.UU.plot.bp, showCategory = 20) 
+barplot(colPB.ST.UU.plot.bp, showCategory = 20)
+barplot(colPB.LT.UU.plot.bp, showCategory = 20)
+```
+
+make GO term dotplots for DD quads
+```{r}
+#I previously determined that Biological Processes is the best category for GO
+OSvSS.paired.DD.plot.bp <- enrichGO(forGO.OSvSS.paired.DD$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+colPB.ST.DD.plot.bp <- enrichGO(forGO.colPB.ST.DD$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+colPB.LT.DD.plot.bp <- enrichGO(forGO.colPB.LT.DD$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+
+#plot
+barplot(OSvSS.paired.DD.plot.bp, showCategory = 20)
+#nothing significant
+barplot(colPB.ST.DD.plot.bp, showCategory = 20)
+#looks similar to "true" data
+barplot(colPB.LT.DD.plot.bp, showCategory = 20)
+#nothing significant
+```
+
+Make dfs for GO for the eroded genes 
+```{r}
+#UU quads
+common.toST.UU <- OSvSS.paired.UU.df %>% filter(genes %in% colPB.ST.UU.df$genes)
+common.toLT.UU <- OSvSS.paired.UU.df %>% filter(genes %in% colPB.LT.UU.df$genes)
+diff.STtoLT.UU <- common.toST.UU %>% filter(!genes %in% common.toLT.UU$genes)
+go.diff.STtoLT.UU <- vole_to_mouse(diff.STtoLT.UU)
+
+#DD quads
+common.toST.DD <- OSvSS.paired.DD.df %>% filter(genes %in% colPB.ST.DD.df$genes)
+common.toLT.DD <- OSvSS.paired.DD.df %>% filter(genes %in% colPB.LT.DD.df$genes)
+diff.STtoLT.DD <- common.toST.DD %>% filter(!genes %in% common.toLT.DD$genes)
+go.diff.STtoLT.DD <- vole_to_mouse(diff.STtoLT.DD)
+```
+
+run GO for eroded genes
+```{r}
+go.diff.STtoLT.UU.bp <- enrichGO(go.diff.STtoLT.UU$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont = "BP", pAdjustMethod = "fdr", readable = TRUE)
+go.diff.STtoLT.DD.bp <- enrichGO(go.diff.STtoLT.DD$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont = "BP", pAdjustMethod = "fdr", readable = TRUE)
+
+#plot
+barplot(go.diff.STtoLT.UU.bp, showCategory = 20)
+barplot(go.diff.STtoLT.DD.bp, showCategory = 20)
+```
+
+#filter GO plots by appropriate descriptions
+```{r}
+#upreg/UU quads
+filter_go_48P_up <- go.48P.up.plot.bp@result %>% filter(Description %in% UU_terms$Description)
+filter_go_4P_up <- go.4P.up.plot.bp@result %>% filter(Description %in% UU_terms$Description)
+filter_go_colPBond_up <- go.colPBond.up.plot.bp@result %>% filter(Description %in% UU_terms$Description)
+filter_go_paired_UU <- OSvSS.paired.UU.plot.bp@result %>% filter(Description %in% UU_terms$Description)
+filter_go_ST_UU <- colPB.ST.UU.plot.bp@result %>% filter(Description %in% UU_terms$Description)
+filter_go_LT_UU <- colPB.LT.UU.plot.bp@result %>% filter(Description %in% UU_terms$Description)
+filter_go_diffSTtoLT_UU <- go.diff.STtoLT.UU.bp@result %>% filter(Description %in% UU_terms$Description)
+
+#downreg/DD quads
+filter_go_48P_down <- go.48P.down.plot.bp@result %>% filter(Description %in% DD_terms$Description)
+filter_go_4P_down <- go.4P.down.plot.bp@result %>% filter(Description %in% DD_terms$Description)
+filter_go_colPBond_down <- go.colPBond.down.plot.bp@result %>% filter(Description %in% DD_terms$Description)
+filter_go_paired_DD <- OSvSS.paired.DD.plot.bp@result %>% filter(Description %in% DD_terms$Description)
+filter_go_ST_DD <- colPB.ST.DD.plot.bp@result %>% filter(Description %in% DD_terms$Description)
+filter_go_LT_DD <- colPB.LT.DD.plot.bp@result %>% filter(Description %in% DD_terms$Description)
+filter_go_diffSTtoLT_DD <- go.diff.STtoLT.DD.bp@result %>% filter(Description %in% DD_terms$Description)
+
+#save
+
+write_csv(filter_go_48P_up, "handpicked GO terms 48P upreg.txt")
+write_csv(filter_go_4P_up, "handpicked GO terms supsampled 4P upreg.txt")
+write_csv(filter_go_colPBond_up, "handpicked GO terms subsampled combined pair bond upreg.txt")
+write_csv(filter_go_paired_UU, "handpicked GO terms paired UU quad.txt")
+write_csv(filter_go_ST_UU, "handpicked GO terms colPBond to STsep UU quad.txt")
+write_csv(filter_go_LT_UU, "handpicked GO terms colPBond to LTsep UU quad.txt")
+write_csv(filter_go_diffSTtoLT_UU, "handpicked GO terms diff STtoLT UU quad.txt")
+
+write_csv(filter_go_48P_down, "handpicked GO terms 48P downreg.txt")
+write_csv(filter_go_4P_down, "handpicked GO terms sdownsampled 4P downreg.txt")
+write_csv(filter_go_colPBond_down, "handpicked GO terms subsampled combined pair bond downreg.txt")
+write_csv(filter_go_paired_DD, "handpicked GO terms paired DD quad.txt")
+write_csv(filter_go_ST_DD, "handpicked GO terms colPBond to STsep DD quad.txt")
+write_csv(filter_go_LT_DD, "handpicked GO terms colPBond to LTsep DD quad.txt")
+write_csv(filter_go_diffSTtoLT_DD, "handpicked GO terms diff STtoLT DD quad.txt")
+```
+
+make dfs for Morpheus
+```{r}
+forM_48P <- res.48P_ss.df %>% dplyr::select(c(1,3)) %>% dplyr::rename("48PL2FC" = 2)
+forM_4P <- res.4P_ss.df %>% dplyr::select(c(1,3)) %>% dplyr::rename("4PL2FC" = 2)
+forM_colPBond <- res.collapsed_ss.df %>% dplyr::select(c(1,3)) %>% dplyr::rename("colPbondL2FC" = 2)
+forM_48I <- res.48I_ss.df %>% dplyr::select(c(1,3)) %>% dplyr::rename("48IL2FC" = 2)
+forM_4I <- res.4I_ss.df %>% dplyr::select(c(1,3)) %>% dplyr::rename("4IL2FC" = 2)
+```
+
+merge and save dfs
+```{r}
+forM_RP <- left_join(forM_48P, forM_4P) %>% column_to_rownames("genes")
+forM_colPBond_seps <- left_join(forM_colPBond, forM_48I)
+forM_colPBond_seps <- left_join(forM_colPBond_seps, forM_4I) %>% column_to_rownames("genes")
+
+#save
+```
+Morpheus for upreg/UU GO plots
+```{r}
+#For Figure 2 equivalent, I need upreg DEGs from combined pair bond and the UU quad of the paired RRHO
+forM_colPBond_up <- filter_go_colPBond_up %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("colPBond_upreg_padjust" = 2)
+forM_paired_UU <- filter_go_paired_UU %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("paired_UUquad_padjust" = 2)
+
+forM_combinedPBond_up_UU <- left_join(forM_colPBond_up, forM_paired_UU, by = "Description")
+
+#For Figure 3 equivalent I need UU quads of paired, ST separation, LT separation, and eroded genes from RRHOs. I already have the paired UU quad above.
+forM_STsep_UU <- filter_go_ST_UU %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("STsep_UUquad_padjust" = 2)
+forM_LTsep_UU <- filter_go_LT_UU %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("LTsep_UUquad_padjust" = 2)
+forM_diffSTtoLT_UU <- filter_go_diffSTtoLT_UU %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("diffSTtoLTsep_UUquad_padjust" = 2)
+
+forM_colPBond_vSeps <- left_join(forM_paired_UU, forM_STsep_UU, by = "Description") %>% left_join(., forM_LTsep_UU, by = "Description") %>% left_join(., forM_diffSTtoLT_UU, by = "Description")
+
+
+write_csv(forM_combinedPBond_up_UU, "GO terms for Morpheus colPBond_upreg and paired_UU.txt")
+write_csv(forM_colPBond_vSeps, "GO terms for Morpheus colPBonds_seps_diff_UU.txt")
+```
+
+Morpheus for downreg/DD GO plots
+```{r}
+#For Figure 2 equivalent, I need upreg DEGs from combined pair bond and the DD quad of the paired RRHO
+forM_colPBond_down <- filter_go_colPBond_down %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("colPBond_downreg_padjust" = 2)
+forM_paired_DD <- filter_go_paired_DD %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("paired_DDquad_padjust" = 2)
+
+forM_combinedPBond_down_DD <- left_join(forM_colPBond_down, forM_paired_DD, by = "Description")
+
+#For Figure 3 equivalent I need DD quads of paired, ST separation, LT separation, and eroded genes from RRHOs. I already have the paired DD quad above.
+forM_STsep_DD <- filter_go_ST_DD %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("STsep_DDquad_padjust" = 2)
+forM_LTsep_DD <- filter_go_LT_DD %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("LTsep_DDquad_padjust" = 2)
+forM_diffSTtoLT_DD <- filter_go_diffSTtoLT_DD %>% dplyr::select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust)) %>% rename("diffSTtoLTsep_DDquad_padjust" = 2)
+
+forM_colPBond_vSeps <- left_join(forM_paired_DD, forM_STsep_DD, by = "Description") %>% left_join(., forM_LTsep_DD, by = "Description") %>% left_join(., forM_diffSTtoLT_DD, by = "Description")
+
+
+write_csv(forM_combinedPBond_down_DD, "GO terms for Morpheus colPBond_downreg and paired_DD.txt")
+write_csv(forM_colPBond_vSeps, "GO terms for Morpheus colPBonds_seps_diff_DD.txt")
+```
+
+I then ran the subsample twice more to ensure that I hadn't just gotten "lucky" with the initial subsampling. All subsampling came back with a similiar answer so as a final check I wanted to make sure that different animals were actually being subsampled between all three runs.
+
+```{r}
+animals_1 <- as.data.frame(metrics_subsample$Animal) %>% dplyr::rename("Animals1" = 1)
+animals_2 <- as.data.frame(metrics_subsample2$Animal) %>% dplyr::rename("Animals2" = 1)
+animals_3 <- as.data.frame(metrics_subsample3$Animal) %>% dplyr::rename("Animals3" = 1)
+all_animals <- cbind(animals_1, animals_2, animals_3)
+uncommon_12 <- animals_1 %>% filter(!Animals1 %in% animals_2$Animals2) #animals in first subsample that are not in second subsample. only 4. 1 SS48P, 3 OS4P
+uncommon_13 <- animals_1 %>% filter(!Animals1 %in% animals_3$Animals3) #only 3. 1 SS48P and 2 OS4P. 2662 is in uncommon_12 and uncommon_13
+uncommon_23 <- animals_2 %>% filter(!Animals2 %in% animals_3$Animals3) #only 3. 1 SS48P and 2 OS4P. 2644 and 2766 is in uncommon_13 and uncommon_23. 2638 is only in 2. 
+uncommon_12_metrics <- metrics %>% filter(Animal %in% uncommon_12$Animals1)
+uncommon_13_metrics <- metrics %>% filter(Animal %in% uncommon_13$Animals1)
+uncommon_23_metrics <- metrics %>% filter(Animal %in% uncommon_23$Animals2)
+```
+
+
+
+
+
+

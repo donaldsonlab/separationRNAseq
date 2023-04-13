@@ -1,0 +1,222 @@
+---
+title: "WGCNA trait-module analysis for TRAP"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+#load libraries
+```{r}
+library(tidyverse)
+library(WGCNA)
+library(readxl)
+library(beepr)
+options(stringsAsFactors = FALSE)
+```
+
+import TPM normalized read counts for TRAP samples 
+```{r}
+#made November 12th, 2019 using transcript.length_w_genes <- read.csv("{dir}/transcript.length_w_genes.txt", sep="", stringsAsFactors=FALSE) to normalize. Not filtered for a minimum number of read counts.
+samples_TPM <- read.csv("{dir}/TRAP.counts_TPM.txt")
+
+#filter for at least 1 normalized read count to be consistent with RNAseq stuff
+samples_TPM <- samples_TPM %>% filter_all(all_vars(.>1)) %>% column_to_rownames("genes")
+
+#remove extra characters from column names
+samples0 <- as.data.frame(t(samples_TPM)) 
+samples0.names <- samples0 %>% rownames_to_column("Animals")
+samples0.names <- samples0.names$Animals
+samples0.names <- str_remove(samples0.names, "Counts") 
+samples0.names <- str_remove(samples0.names, "Count")
+samples0 <- cbind(samples0.names, samples0)
+samples0 <- samples0 %>% rownames_to_column("Animals")
+samples0$Animals = NULL
+samples_TPM <- samples0 %>% column_to_rownames("samples0.names")
+samples_TPM <- as.data.frame(t(samples_TPM))
+```
+
+import TRAP traits
+```{r}
+TRAP_traits <- read_excel("{dir}/TRAP_traits.xlsx", sheet = "traits")
+#all traits are in the same order as the samples 
+TRAP_traits_recoded <- read_excel("{dir}/TRAP_traits.xlsx", sheet = "traits_recoded") %>% column_to_rownames("Animal")
+#I'm removing the timepoint, the parent code, and the Age traits. 
+TRAP_traits_recoded <- TRAP_traits_recoded %>% select(c(1,2,4,5))
+```
+
+make WGCNA dfs 
+```{r}
+gsg = goodSamplesGenes(samples_TPM, verbose = 3)
+gsg$allOK
+#I don't need to remove any of these genes so I can skip that step. 
+datExpr <- as.data.frame(t(samples_TPM))
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+```
+
+now see if there's any samples that need to be trimmed
+```{r}
+sampleTree = hclust(dist(datExpr), method = "complete")
+plot(sampleTree)
+```
+I got rid of 2647I and 2601I since they all end at similiar places on the dendrogram and I want as many samples as possible
+
+determine a thresholding power
+```{r}
+powers = c(c(1:10), seq(from = 12, to=20, by=2))# Call the network topology analysis function
+sft = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5)# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));cex1 = 0.9;# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",main = paste("Scale independence"));text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],labels=powers,cex=cex1,col="red");# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+I tried a power of 14 and 8 and I think 9 is the best option 
+```{r}
+net = blockwiseModules(datExpr, power = 9, TOMType = "signed", minModuleSize = 30, reassignThreshold = 0, mergeCutHeight = 0.25, numericLabels = TRUE, pamRespectsDendro = FALSE, saveTOMs = TRUE, saveTOMFileBase = "TRAP", verbose = 3)
+mergedColors = labels2colors(net$colors)
+sizeGrWindow(12, 9)
+
+setwd("{dir}/2021_05_20_WGCNA")
+pdf("WGCNA of TRAP samples_dendrogram.pdf", height = 6, width = 10)
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],"Module colors",dendroLabels = FALSE, hang = 0.03,addGuide = TRUE, guideHang = 0.05)
+dev.off()
+```
+
+save stuff
+```{r}
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs
+geneTree = net$dendrograms[[1]]
+save(MEs, moduleLabels, moduleColors, geneTree,file = "TRAP_module_construction.RData")
+```
+
+now relate epigenes to traits
+```{r}
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+MEs0 = moduleEigengenes(datExpr, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, TRAP_traits_recoded, use = "p")
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+```
+
+```{r, fig.height= 6, fig.width = 6}
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",signif(moduleTraitPvalue, 1), ")", sep = "")
+dim(textMatrix) = dim(moduleTraitCor)
+setwd("{dir}/2021_05_20_WGCNA")
+pdf("WGCNA of TRAP samples.pdf", height = 8, width = 8)
+par(mar = c(6, 8.5, 3, 3))
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(TRAP_traits_recoded),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.8,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+dev.off()
+```
+
+save all modules
+```{r}
+blue <- as.data.frame(names(datExpr)[moduleColors=="blue"]) %>% rename("blue_genes" = 1) #has DRD2
+greenyellow <- as.data.frame(names(datExpr)[moduleColors=="greenyellow"]) %>% rename("greenyellow_genes" = 1)
+brown <- as.data.frame(names(datExpr)[moduleColors=="brown"]) %>% rename("brown_genes" = 1)
+green <- as.data.frame(names(datExpr)[moduleColors=="green"]) %>% rename("green_genes" = 1)
+royalblue <- as.data.frame(names(datExpr)[moduleColors=="royalblue"]) %>% rename("royalblue_genes" = 1)
+grey60 <- as.data.frame(names(datExpr)[moduleColors=="grey60"]) %>% rename("grey60_genes" = 1) #has DRD1A, Fosb, Oprk1, and Pdyn
+cyan <- as.data.frame(names(datExpr)[moduleColors=="cyan"]) %>% rename("cyan_genes" = 1)
+grey <- as.data.frame(names(datExpr)[moduleColors=="grey"]) %>% rename("grey_genes" = 1)
+pink <- as.data.frame(names(datExpr)[moduleColors=="pink"]) %>% rename("pink_genes" = 1)
+brown <- as.data.frame(names(datExpr)[moduleColors=="brown"]) %>% rename("brown_genes" = 1)
+yellow <- as.data.frame(names(datExpr)[moduleColors=="yellow"]) %>% rename("yellow_genes" = 1)
+red <- as.data.frame(names(datExpr)[moduleColors=="red"]) %>% rename("red_genes" = 1)
+turquoise <- as.data.frame(names(datExpr)[moduleColors=="turquoise"]) %>% rename("turquoise_genes" = 1)
+black <- as.data.frame(names(datExpr)[moduleColors=="black"]) %>% rename("black_genes" = 1)
+midnightblue <- as.data.frame(names(datExpr)[moduleColors=="midnightblue"]) %>% rename("midnightblue_genes" = 1)
+purple <- as.data.frame(names(datExpr)[moduleColors=="purple"]) %>% rename("purple_genes" = 1)
+salmon <- as.data.frame(names(datExpr)[moduleColors=="salmon"]) %>% rename("salmon_genes" = 1)
+lightgreen <- as.data.frame(names(datExpr)[moduleColors=="lightgreen"]) %>% rename("lightgreen_genes" = 1)
+tan <- as.data.frame(names(datExpr)[moduleColors=="tan"]) %>% rename("tan_genes" = 1)
+lightyellow <- as.data.frame(names(datExpr)[moduleColors=="lightyellow"]) %>% rename("lightyellow_genes" = 1)
+magenta <- as.data.frame(names(datExpr)[moduleColors=="magenta"]) %>% rename("magenta_genes" = 1)
+lightcyan <- as.data.frame(names(datExpr)[moduleColors=="lightcyan"]) %>% rename("lightcyan_genes" = 1)
+
+#save csv files
+write_csv(greenyellow, "greenyellow.txt")
+write_csv(green, "green.txt")
+write_csv(grey, "grey.txt")
+write_csv(pink, "pink.txt")
+write_csv(blue, "blue.txt")
+write_csv(brown, "brown.txt")
+write_csv(yellow, "yellow.txt")
+write_csv(red, "red.txt")
+write_csv(turquoise, "turquoise.txt")
+write_csv(black, "black.txt")
+write_csv(midnightblue, "midnightblue.txt")
+write_csv(purple, "purple.txt")
+write_csv(cyan, "cyan.txt")
+write_csv(grey60, "grey60.txt")
+write_csv(salmon, "salmon.txt")
+write_csv(lightgreen, "lightgreen.txt")
+write_csv(tan, "tan.txt")
+write_csv(royalblue, "royalblue.txt")
+write_csv(lightyellow, "lightyellow.txt")
+write_csv(magenta, "magenta.txt")
+write_csv(lightcyan, "lightcyan.txt")
+```
+
+
+```{r}
+setwd("{dir}/WGCNA")
+IvP.mostPos <- as.data.frame(names(datExpr)[moduleColors=="blue"])
+IvP.mostNeg <- as.data.frame(names(datExpr)[moduleColors=="turquoise"])
+IvP.okPos.Separation.okPos <- as.data.frame(names(datExpr)[moduleColors =="royalblue"])
+write_csv(IvP.mostNeg, "WGCNA_TRAP_IvP_mostNegcorrelated.txt")
+write_csv(IvP.mostPos, "WGCNA_TRAP_IvP_mostPoscorrelated.txt")
+write_csv(IvP.okPos.Separation.okPos, "WGCNA_TRAP_IvP_semiPoscor_IvPandSep.txt")
+```
+I put most Pos and most Neg modules for Input_Pulldown in to Enrichr. "Input" was set to 0 and "pulldown" was set to 1. Most Pos's top mouse cell type was "nucleus accumbens" so that's good! And GO terms were mainly mitochondrial. Most Neg's mouse cell types include microglia (though it's not the top terms) and GO terms cilium and centrioles (weird). Pathways include "oligodendrocyte differentiation." So I think positively correlated means neurons (pulldowns) and negatively correlated means glia (Inputs).
+I set OS to 1 and SS to 0 so I think positive correlation in PairingType means OS and negative correlation in means SS. Isolated was set to 1 and Remain Paired was 0 so positively correlated in Separation means Isolated etc.
+
+filter out the normalized read counts by the genes in the blue modules then save for Morpheus
+```{r}
+samples_TPM <- samples_TPM %>% rownames_to_column("genes")
+forMor <- samples_TPM %>% filter(genes %in% IvP.mostPos$`names(datExpr)[moduleColors == "blue"]`)
+setwd()
+write_csv(forMor, "WGCNA blue modules for morphus.txt")
+```
+
+collecting all of the modules that are significantly negatively correlated in the I_P column
+```{r}
+blue <- as.data.frame(names(datExpr)[moduleColors=="blue"]) %>% rename("genes" = 1) #has DRD2
+greenyellow <- as.data.frame(names(datExpr)[moduleColors=="greenyellow"]) %>% rename("genes" = 1)
+brown <- as.data.frame(names(datExpr)[moduleColors=="brown"]) %>% rename("genes" = 1)
+green <- as.data.frame(names(datExpr)[moduleColors=="green"]) %>% rename("genes" = 1)
+royalblue <- as.data.frame(names(datExpr)[moduleColors=="royalblue"]) %>% rename("genes" = 1)
+grey60 <- as.data.frame(names(datExpr)[moduleColors=="grey60"]) %>% rename("genes" = 1) #has DRD1A, Fosb, Oprk1, and Pdyn
+cyan <- as.data.frame(names(datExpr)[moduleColors=="cyan"]) %>% rename("genes" = 1)
+
+posCor_IvP <- rbind(blue, greenyellow, brown, green, royalblue, grey60, cyan)
+
+allpos_forMor <- samples_TPM %>% filter(genes %in% posCor_IvP$genes)
+allpos_forMor_P <- allpos_forMor %>% select(c(1, 22:41))
+
+grey60_forMor <- samples_TPM %>% filter(genes %in% grey60$genes)
+grey60_forMor_P <- grey60_forMor %>% select(c(1, 22:41))
+setwd()
+write_csv(allpos_forMor, "WGCNA all posCor modules for morphus.txt")
+write_csv(allpos_forMor_P, "WGCNA all posCor modules Pulldowns only for morphus.txt")
+write_csv(grey60_forMor, "WGCNA grey60 module for morphus.txt")
+write_csv(grey60_forMor_P, "WGCNA grey60 module pulldowns only for morphus.txt")
+```
+
+
+

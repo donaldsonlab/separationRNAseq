@@ -1,0 +1,224 @@
+---
+title: "RRHO to compare short- and long-term separation"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+load libraries 
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+library(viridis)
+library(readxl)
+library(gridExtra)
+library(ggpubr)
+library(DESeq2)
+library(EnhancedVolcano)
+library(RRHO2)
+library(DOSE)
+library(enrichplot)
+library(org.Mm.eg.db) #mouse genome data
+library(clusterProfiler)
+library(UpSetR)
+library(stringi)
+library(SuperExactTest)
+source("~/R/thesis2/RNAseq/Functions/convert_voleToMouse_geneIDs.R")
+source("~/R/thesis2/RNAseq/Functions/plot_GOanlaysis.R")
+source("C:/Users/Julie/Documents/R/eLife_revisions/functions/make_RRHO_df.R")
+source("~/R/eLife_revisions/functions/get_rrho_quad_genes.R")
+```
+
+#import sequencing data for inputs and column data 
+```{r}
+metrics <- read_excel("{dir}/Input_RNAseq_metrics.xlsx", sheet = "Correct order prelim")
+metrics <- mutate_at(metrics, vars("Animal", "Cohort", "Pairing", "Timepoint", "Separation", "ProcessingGroup", "PPrefCat", "DissectionOrder", "CageChange", "ParentCode", "PairingAgeCat", "SACAgeCat", "RIN", "InputRNACat", "TRAP", "InputRNA"), as.factor)
+#remove animal 2945 that had a ppref below 50%
+metrics <- metrics %>% slice(-c(12))
+
+inputs <- read.csv("{dir}/Merged all_inputs.txt", stringsAsFactors=FALSE)
+inputs <- inputs %>% filter_all(all_vars(.>10)) %>% distinct(genes, .keep_all = TRUE) %>% filter(!is.na(genes)) %>% column_to_rownames("genes")
+#remove animal 2945
+inputs <- inputs %>% select(-c(12))
+```
+
+#run DESeq
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = inputs, colData = metrics, design = ~ParentCode + PairingAgeCat + Cohort)
+dds <- DESeq(dds)
+
+res.48P <- results(dds, contrast = c("Cohort", "OS48P", "SS48P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.48I <- results(dds, contrast = c("Cohort", "OS48I", "SS48I"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4P <- results(dds, contrast = c("Cohort", "OS4P", "SS4P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4I <- results(dds, contrast = c("Cohort", "OS4I", "SS4I"), alpha = 0.05, pAdjustMethod = "fdr")
+res.48.OS <- results(dds, contrast = c("Cohort", "OS48I", "OS48P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4.OS <- results(dds, contrast = c("Cohort", "OS4I", "OS4P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.48.SS <- results(dds, contrast = c("Cohort", "SS48I", "SS48P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4.SS <- results(dds, contrast = c("Cohort", "SS4I", "SS4P"), alpha = 0.05, pAdjustMethod = "fdr")
+
+dds.collapsed <- DESeqDataSetFromMatrix(countData = inputs, colData = metrics, design = ~ParentCode + PairingAgeCat + RPCollapsed)
+dds.collapsed <- DESeq(dds.collapsed)
+
+res.collapsed <- results(dds.collapsed, contrast = c("RPCollapsed", "OSP", "SSP"), alpha = 0.05, pAdjustMethod = "fdr")
+
+res.48P.df <- as.data.frame(res.48P) %>% rownames_to_column("genes")
+res.48I.df <- as.data.frame(res.48I) %>% rownames_to_column("genes")
+res.4P.df <- as.data.frame(res.4P) %>% rownames_to_column("genes")
+res.4I.df <- as.data.frame(res.4I) %>% rownames_to_column("genes")
+res.48.OS.df <- as.data.frame(res.48.OS) %>% rownames_to_column("genes")
+res.4.OS.df <- as.data.frame(res.4.OS) %>% rownames_to_column("genes")
+res.48.SS.df <- as.data.frame(res.48.SS) %>% rownames_to_column("genes")
+res.4.SS.df <- as.data.frame(res.4.SS) %>% rownames_to_column("genes")
+res.collpased.df <- as.data.frame(res.collapsed) %>% rownames_to_column("genes")
+```
+#make RRHO compatiable dfs
+```{r}
+OSvSS48I <- RRHO_math(res.48I.df)
+OSvSS48P <- RRHO_math(res.48P.df)
+OSvSS4I <- RRHO_math(res.4I.df)
+OSvSS4P <- RRHO_math(res.4P.df)
+OS48IvP <- RRHO_math(res.48.OS.df)
+OS4IvP <- RRHO_math(res.4.OS.df)
+SS48IvP <- RRHO_math(res.48.SS.df)
+SS4IvP <- RRHO_math(res.4.SS.df)
+PBcol <- RRHO_math(res.collpased.df)
+```
+
+RRHO for each timepoint
+```{r}
+OSvSS.paired <- RRHO2_initialize(OSvSS4P, OSvSS48P, labels = c("OS vs SS Paired at 4wks", "OS vs SS Paired at 48hrs"), stepsize = 100, boundary = 0.02)
+#OSvSS.paired.fisher <- RRHO2_initialize(OSvSS4P, OSvSS48P, labels = c("Long-term pair bond", "Short-term pair bond"), stepsize = 100, boundary = 0.02, method = "fisher")
+
+OSvSS.col.ST <- RRHO2_initialize(PBcol, OSvSS48I, labels = c("OS vs SS collasped pair bond", "OS vs SS Short-term separation"), stepsize = 100, boundary = 0.02)
+#OSvSS.col.ST.fisher <- RRHO2_initialize(PBcol, OSvSS48I, labels = c("Combined pair bond", "Short-term partner separation"), stepsize = 100, boundary = 0.02, method = "fisher")
+
+OSvSS.col.LT <- RRHO2_initialize(PBcol, OSvSS4I, labels = c("OS vs SS collasped pair bond", "OS vs SS long-term separation"), stepsize = 100, boundary = 0.02)
+#OSvSS.col.LT.fisher <- RRHO2_initialize(PBcol, OSvSS4I, labels = c("Combined pair bond", "Long-term partner separation"), stepsize = 100, boundary = 0.02, method = "fisher")
+
+
+OSvSS.ST.LT <- RRHO2_initialize(OSvSS48I, OSvSS4I, labels = c("OS v SS short-term separation", "OS v SS long-term separation"), stepsize = 100, boundary = 0.02)
+
+OS.IvP <- RRHO2_initialize(OS48IvP, OS4IvP, labels = c("OS short-term sep. v paired", "OS long-term sep. v paired"), stepsize = 100, boundary = 0.02)
+
+SS.IvP <- RRHO2_initialize(SS48IvP, SS4IvP, labels = c("SS short-term sep. v paired", "SS long-term sep. v paired"), stepsize = 100, boundary = 0.02)
+
+#plot heatmaps
+RRHO2_heatmap(OSvSS.paired, maximum = 300, minimum = 1, colorGradient = viridis(101, option = "A"))
+RRHO2_heatmap(OSvSS.col.ST, maximum = 300, minimum = 1, colorGradient = viridis(101, option = "A"))
+RRHO2_heatmap(OSvSS.col.LT, maximum = 300, minimum = 1, colorGradient = viridis(101, option = "A"))
+RRHO2_heatmap(OSvSS.ST.LT, maximum = 300, minimum = 1, colorGradient = viridis(101, option = "A"))
+RRHO2_heatmap(OS.IvP, maximum = 300, minimum = 1, colorGradient = viridis(101, option = "A"))
+RRHO2_heatmap(SS.IvP, maximum = 300, minimum = 1, colorGradient = viridis(101, option = "A"))
+```
+
+extracting gene lists from each quadrant
+```{r}
+colPB_quad_genes <- rrho_quad_genes(OSvSS.paired, "colPB")
+st_quad_genes <- rrho_quad_genes(OSvSS.col.ST, "colPB_ST")
+lt_quad_genes <- rrho_quad_genes(OSvSS.col.LT, "colPB_LT")
+stlt_quad_genes <- rrho_quad_genes(OSvSS.ST.LT, "ST_LT")
+```
+
+ok so to prep for Morpheus plots I have to extract the overlapping UU and DD genes from each RRHO. Then I need to filter the DESeq results for those genes and only select the L2FC.
+
+extract the overlapping UU and DD genes from each RRHO
+```{r}
+colPB_UU <- as.data.frame(colPB_quad_genes[["UU genes"]][["overlap_uu"]]) %>% dplyr::rename("colPB_uu" = 1)
+st_UU <- as.data.frame(st_quad_genes[["UU genes"]][["overlap_uu"]]) %>% dplyr::rename("colPBst_uu" = 1)
+lt_UU <- as.data.frame(lt_quad_genes[["UU genes"]][["overlap_uu"]]) %>% dplyr::rename("colPBlt_uu" = 1)
+stlt_UU <- as.data.frame(stlt_quad_genes[["UU genes"]][["overlap_uu"]]) %>% dplyr::rename("stlt_uu" = 1)
+
+colPB_DD <- as.data.frame(colPB_quad_genes[["DD genes"]][["overlap_dd"]]) %>% dplyr::rename("colPB_dd" = 1)
+st_DD <- as.data.frame(st_quad_genes[["DD genes"]][["overlap_dd"]]) %>% dplyr::rename("colPBst_dd" = 1)
+lt_DD <- as.data.frame(lt_quad_genes[["DD genes"]][["overlap_dd"]]) %>% dplyr::rename("colPBlt_dd" = 1)
+stlt_DD <- as.data.frame(stlt_quad_genes[["DD genes"]][["overlap_dd"]]) %>% dplyr::rename("stlt_dd" = 1)
+```
+
+```{r}
+#filter DESeq results dfs for the overlapping genes from RRHO in both the UU and DD quads. Then extract only the gene name the L2FC
+forM_colPB_uu <- res.collpased.df %>% filter(genes %in% stlt_UU$stlt_uu) %>% select(c(1, 3)) %>% dplyr::rename("L2FC_colPB" = 2)
+forM_st_uu <- res.48I.df %>% filter(genes %in% stlt_UU$stlt_uu) %>% select(c(1, 3)) %>% dplyr::rename("L2FC_STsep" = 2)
+forM_lt_uu <- res.4I.df %>% filter(genes %in% stlt_UU$stlt_uu) %>% select(c(1, 3)) %>% dplyr::rename("L2FC_LTsep" = 2)
+
+forM_colPB_dd <- res.collpased.df %>% filter(genes %in% stlt_DD$stlt_dd) %>% select(c(1, 3)) %>% dplyr::rename("L2FC_colPB" = 2)
+forM_st_dd <- res.48I.df %>% filter(genes %in% stlt_DD$stlt_dd) %>% select(c(1, 3)) %>% dplyr::rename("L2FC_STsep" = 2)
+forM_lt_dd <- res.4I.df %>% filter(genes %in% stlt_DD$stlt_dd) %>% select(c(1, 3)) %>% dplyr::rename("L2FC_LTsep" = 2)
+
+forM_STLT_UUquads <- left_join(forM_colPB_uu, forM_st_uu) %>% left_join(., forM_lt_uu, by = "genes")
+forM_STLT_DDquads <- left_join(forM_colPB_dd, forM_st_dd) %>% left_join(., forM_lt_dd, by = "genes")
+
+#save csv files
+```
+
+
+In the morpheus plots there's a subset of genes that have opposite regulation in the PBond but the "same" regulation after separation vs genes that "take longer to erode." So let's look at that with a line graph.
+```{r}
+filt_m_uu <- forM_STLT_UUquads %>% filter(L2FC_colPB > 0.30)
+filt_m_uu_opp <- forM_STLT_UUquads %>% filter(L2FC_colPB < (-0.30))
+filt_m_dd <- forM_STLT_DDquads %>% filter(L2FC_colPB < (-0.30))
+filt_m_dd_opp <- forM_STLT_DDquads %>% filter(L2FC_colPB > 0.30)
+
+#make tidy
+filt_m_uu <- pivot_longer(filt_m_uu, cols = c(2:4), names_to = "condition", values_to = "L2FC")
+filt_m_dd <- pivot_longer(filt_m_dd, cols = c(2:4), names_to = "condition", values_to = "L2FC")
+
+filt_m_uu_opp <- pivot_longer(filt_m_uu_opp, cols = c(2:4), names_to = "condition", values_to = "L2FC")
+filt_m_dd_opp <- pivot_longer(filt_m_dd_opp, cols = c(2:4), names_to = "condition", values_to = "L2FC")
+```
+
+line plots of filtered gene L2FCs
+```{r}
+ggboxplot(filt_m_uu, x = "condition", y = "L2FC",
+         color = "condition", id = "genes")
+ggboxplot(filt_m_dd, x = "condition", y = "L2FC",
+         color = "condition", id = "genes")
+
+ggboxplot(filt_m_uu_opp, x = "condition", y = "L2FC", id = "genes") +
+  geom_hline(yintercept =  0, linetype = "dashed") + 
+  scale_x_discrete(labels = c("Remain paired", "Short-term separation", "Long-term separation")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggboxplot(filt_m_dd_opp, x = "condition", y = "L2FC", id = "genes") +
+  geom_hline(yintercept = 0, linetype = "dashed") + 
+  scale_x_discrete(labels = c("Remain paired", "Short-term separation", "Long-term separation")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Now look at the biological function of the _opp gene lists using GO
+import mouse genome for converting ids
+```{r}
+mart_export_PVEnsembl_mouseEnsembl_mousegeneName <- read.csv("{dir}/mart_export_PVEnsembl_mouseEnsembl_mousegeneName.txt", stringsAsFactors=FALSE)
+
+#getting a biomart df that only contains rows that have mouse stable IDs 
+biomart_mouseE <- filter(mart_export_PVEnsembl_mouseEnsembl_mousegeneName, trimws(Mouse.gene.stable.ID) !="")
+```
+
+
+convert vole to mouse genes for GO
+```{r}
+go_uu_opp <- vole_to_mouse(filt_m_uu_opp)
+go_dd_opp <- vole_to_mouse(filt_m_dd_opp)
+
+go_uu <- vole_to_mouse(filt_m_uu)
+go_dd <- vole_to_mouse(filt_m_dd)
+```
+```{r}
+go_uu_opp_plot <- enrichGO(go_uu_opp$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+go_dd_opp_plot <- enrichGO(go_dd_opp$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "none", readable = TRUE)
+
+go_uu_plot <- enrichGO(go_uu$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+go_dd_plot <- enrichGO(go_dd$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+
+
+
+barplot(go_uu_opp_plot, showCategory = 20) + scale_fill_viridis(direction = -1, guide = guide_colorbar(reverse = TRUE))
+barplot(go_dd_opp_plot, showCategory = 20) + scale_fill_viridis(direction = -1, guide = guide_colorbar(reverse = TRUE))
+
+barplot(go_uu_plot, showCategory = 20) + scale_fill_viridis(direction = -1, guide = guide_colorbar(reverse = TRUE))
+barplot(go_dd_plot, showCategory = 20) + scale_fill_viridis(direction = -1, guide = guide_colorbar(reverse = TRUE))
+
+```
+
+

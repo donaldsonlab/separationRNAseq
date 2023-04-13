@@ -1,0 +1,187 @@
+---
+title: "Shuffled ranked genes of RRHO"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+#load libraries 
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggfortify)
+library(ggrepel)
+library(GGally)
+library(wesanderson)
+library(viridis)
+library(readxl)
+library(car)
+library(gridExtra)
+library(ez)
+library(ggpubr)
+library(DESeq2)
+library(EnhancedVolcano)
+library(RRHO2)
+library(ggpubr)
+library(scales)
+library(stringi)
+```
+
+
+import sequencing data for inputs and column data 
+```{r}
+metrics <- read_excel("{dir}/Input_RNAseq_metrics.xlsx", sheet = "Correct order prelim")
+metrics <- mutate_at(metrics, vars("Animal", "Cohort", "Pairing", "Timepoint", "Separation", "ProcessingGroup", "PPrefCat", "DissectionOrder", "CageChange", "ParentCode", "PairingAgeCat", "SACAgeCat", "RIN", "InputRNACat", "TRAP", "InputRNA"), as.factor)
+#remove animal 2945 that had a ppref <50%
+metrics <- metrics %>% dplyr::slice(-c(12))
+
+inputs <- read.csv("{dir}/Merged all_inputs.txt", stringsAsFactors=FALSE)
+inputs <- inputs %>% filter_all(all_vars(.>10)) %>% distinct(genes, .keep_all = TRUE) %>% filter(!is.na(genes)) %>% column_to_rownames("genes")
+#remove animal 2945
+inputs <- inputs %>% select(-c(12))
+```
+
+
+run DESeq
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = inputs, colData = metrics, design = ~ParentCode + PairingAgeCat + Cohort)
+dds <- DESeq(dds)
+
+res.48P <- results(dds, contrast = c("Cohort", "OS48P", "SS48P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.48I <- results(dds, contrast = c("Cohort", "OS48I", "SS48I"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4P <- results(dds, contrast = c("Cohort", "OS4P", "SS4P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4I <- results(dds, contrast = c("Cohort", "OS4I", "SS4I"), alpha = 0.05, pAdjustMethod = "fdr")
+
+dds.collapsed <- DESeqDataSetFromMatrix(countData = inputs, colData = metrics, design = ~ParentCode + PairingAgeCat + RPCollapsed)
+dds.collapsed <- DESeq(dds.collapsed)
+
+res.collapsed <- results(dds.collapsed, contrast = c("RPCollapsed", "OSP", "SSP"), alpha = 0.05, pAdjustMethod = "fdr")
+
+
+res.48P.df <- as.data.frame(res.48P) %>% rownames_to_column("genes")
+res.48I.df <- as.data.frame(res.48I) %>% rownames_to_column("genes")
+res.4P.df <- as.data.frame(res.4P) %>% rownames_to_column("genes")
+res.4I.df <- as.data.frame(res.4I) %>% rownames_to_column("genes")
+res.collpased.df <- as.data.frame(res.collapsed) %>% rownames_to_column("genes")
+```
+
+RRHO
+make RRHO dfs
+```{r}
+OSvSS48I <- res.48I.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS48P <- res.48P.df[, c (1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS4I <- res.4I.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS4P <- res.4P.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+PBcol <- res.collpased.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+
+
+#make dfs that only have gene name and rankValue
+OSvSS48I <- OSvSS48I[,c(1,4)]
+OSvSS48P <- OSvSS48P[,c(1,4)]
+OSvSS4I <- OSvSS4I[,c(1,4)]
+OSvSS4P <- OSvSS4P[,c(1,4)]
+PBcol <- PBcol[,c(1,4)]
+```
+
+shuffle OSvSS4P and PBcol ranked gene lists
+```{r}
+shuff_OSvSS4P <- transform(OSvSS4P, genesShuff = sample(genes)) %>% relocate(genesShuff, everything())
+shuff_OSvSS4P$genes = NULL
+shuff_PBcol <- transform(PBcol, genesShuff = sample(genes)) %>% relocate(genesShuff, everything())
+shuff_PBcol$genes = NULL
+```
+
+
+RRHO2 for each timepoint
+```{r}
+OSvSS.paired.pvalue <- RRHO2_initialize(shuff_OSvSS4P, OSvSS48P, labels = c("Long-term pair bond", "Short-term pair bond"), stepsize = 100, boundary = 0.02)
+
+OSvSS.col.ST <- RRHO2_initialize(shuff_PBcol, OSvSS48I, labels = c("Combined pair bond", "Short-term partner separation"), stepsize = 100, boundary = 0.02)
+
+OSvSS.col.LT <- RRHO2_initialize(shuff_PBcol, OSvSS4I, labels = c("Combined pair bond", "Long-term partner separation"), stepsize = 100, boundary = 0.02)
+
+
+#plots
+setwd()
+pdf("OSvSS.paired.pvalue_unscaled_shuffled.pdf", width = 6.5, height = 5, onefile = TRUE)
+RRHO2_heatmap(OSvSS.paired.pvalue, colorGradient = viridis(101, option = "A"))
+dev.off()
+pdf("OSvSS.col.ST.pvalue_unscaled_shuffled.pdf", width = 6.5, height = 5, onefile = TRUE)
+RRHO2_heatmap(OSvSS.col.ST, colorGradient = viridis(101, option = "A"))
+dev.off()
+pdf("OSvSS.col.LT.pvalue_unscaled_shuffled.pdf", width = 6.5, height = 5, onefile = TRUE)
+RRHO2_heatmap(OSvSS.col.LT, colorGradient = viridis(101, option = "A"))
+dev.off()
+```
+
+Double shuffling 
+shuffle X2 metrics 
+```{r}
+metrics_CohortS2 <- transform(metrics_CohortS, CohortS2 = sample(CohortS))
+metrics_RPS2 <- transform(metrics_RPS, RPS2 = sample(RPS))
+```
+
+run DESeq on X2 shuffled dfs
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = inputs, colData = metrics_CohortS2, design = ~ParentCode + PairingAgeCat + CohortS2)
+dds <- DESeq(dds)
+
+res.48P <- results(dds, contrast = c("CohortS2", "OS48P", "SS48P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.48I <- results(dds, contrast = c("CohortS2", "OS48I", "SS48I"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4P <- results(dds, contrast = c("CohortS2", "OS4P", "SS4P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.4I <- results(dds, contrast = c("CohortS2", "OS4I", "SS4I"), alpha = 0.05, pAdjustMethod = "fdr")
+
+dds.collapsed <- DESeqDataSetFromMatrix(countData = inputs, colData = metrics_RPS2, design = ~ParentCode + PairingAgeCat + RPS2)
+dds.collapsed <- DESeq(dds.collapsed)
+
+res.collapsed <- results(dds.collapsed, contrast = c("RPS2", "OSP", "SSP"), alpha = 0.05, pAdjustMethod = "fdr")
+
+
+res.48P.df <- as.data.frame(res.48P) %>% rownames_to_column("genes")
+res.48I.df <- as.data.frame(res.48I) %>% rownames_to_column("genes")
+res.4P.df <- as.data.frame(res.4P) %>% rownames_to_column("genes")
+res.4I.df <- as.data.frame(res.4I) %>% rownames_to_column("genes")
+res.collpased.df <- as.data.frame(res.collapsed) %>% rownames_to_column("genes")
+```
+
+RRHO
+make RRHO dfs with X2 shuffled
+```{r}
+OSvSS48I <- res.48I.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS48P <- res.48P.df[, c (1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS4I <- res.4I.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+OSvSS4P <- res.4P.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+PBcol <- res.collpased.df[, c(1,3,6)] %>% mutate(rankValue = -1 * log10(pvalue) * sign(log2FoldChange)) %>% arrange(desc(rankValue))
+
+
+#make dfs that only have gene name and rankValue
+OSvSS48I <- OSvSS48I[,c(1,4)]
+OSvSS48P <- OSvSS48P[,c(1,4)]
+OSvSS4I <- OSvSS4I[,c(1,4)]
+OSvSS4P <- OSvSS4P[,c(1,4)]
+PBcol <- PBcol[,c(1,4)]
+```
+
+RRHO2 for each timepoint for X2 shuffle
+```{r}
+OSvSS.paired.pvalue <- RRHO2_initialize(OSvSS4P, OSvSS48P, labels = c("OS vs SS Paired at 4wks", "OS vs SS Paired at 48hrs"), stepsize = 100, boundary = 0.02)
+
+OSvSS.col.ST <- RRHO2_initialize(PBcol, OSvSS48I, labels = c("OS vs SS collasped pair bond", "OS vs SS Short-term separation"), stepsize = 100, boundary = 0.02)
+
+OSvSS.col.LT <- RRHO2_initialize(PBcol, OSvSS4I, labels = c("OS vs SS collasped pair bond", "OS vs SS long-term separation"), stepsize = 100, boundary = 0.02)
+
+
+plots
+setwd()
+pdf("OSvSS.paired.pvalue_unscaled.pdf", width = 6.5, height = 5, onefile = TRUE)
+RRHO2_heatmap(OSvSS.paired.pvalue, colorGradient = viridis(101, option = "A"))
+dev.off()
+pdf("OSvSS.col.ST.pvalue_unscaled.pdf", width = 6.5, height = 5, onefile = TRUE)
+RRHO2_heatmap(OSvSS.col.ST, colorGradient = viridis(101, option = "A"))
+C
+RRHO2_heatmap(OSvSS.col.LT, colorGradient = viridis(101, option = "A"))
+dev.off()
+```
+
+
+

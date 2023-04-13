@@ -1,0 +1,224 @@
+---
+title: "Making Spearman correlation distributions"
+output: html_notebook
+---
+I needed a way to quantify that the decreased correlation in expression between the combined pair bond and separation time points is "real." So I'm plotting a distribution of Spearman corrleation Rho and pvalues between the true combined pair bond and shuffled separation time points. To create the shuffled separation time points I am randomly shuffling the Cohort identity of each animal and then running DESeq. I then determine the correlation of L2FC between the true combined pair bond and the shuffled separation L2FC.
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+#load libraries 
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggfortify)
+library(readxl)
+library(ggpubr)
+library(DESeq2)
+library(EnhancedVolcano)
+library(ggpubr)
+source('{dir}/Functions/spearman_R_streamlined.R')
+```
+
+#import sequencing data for inputs and column data 
+```{r}
+metrics <- read_excel("{dir}/Input_RNAseq_metrics.xlsx", sheet = "Correct order prelim")
+metrics <- mutate_at(metrics, vars("Animal", "Cohort", "Pairing", "Timepoint", "Separation", "ProcessingGroup", "PPrefCat", "DissectionOrder", "CageChange", "ParentCode", "PairingAgeCat", "SACAgeCat", "RIN", "InputRNACat", "TRAP", "InputRNA", "RPCollapsed"), as.factor)
+#remove animal 2945 that had a ppref less than 50% 
+metrics <- metrics %>% dplyr::slice(-c(12))
+
+inputs <- read.csv("{dir}/Merged all_inputs.txt", stringsAsFactors=FALSE)
+inputs <- inputs %>% filter_all(all_vars(.>10)) %>% distinct(genes, .keep_all = TRUE) %>% filter(!is.na(genes)) %>% column_to_rownames("genes")
+#remove animal 2945
+inputs <- inputs %>% dplyr::select(-c(12))
+```
+
+#shuffle Cohort column in metrics and run DESeq for 50 shuffles
+```{r}
+shuffled_50 <- shuffle_column(metrics, "Cohort", 50)
+```
+
+#run 48I and 4I contrasts as well as true combined pair bond DESeq 
+```{r}
+results_48I <- contrast_48I(shuffled_50)
+results_4I <- contrast_4I(shuffled_50)
+true_colPBond <- results_colPBond(50)
+```
+
+#merge differential expression results 
+```{r}
+merged_results <- merge_results(list_48I = results_48I, list_4I = results_4I, list_colPBond = true_colPBond)
+```
+
+#correlations
+```{r}
+#correlations
+cor_48I_colPBond <- correlations_48I(merged_results)
+cor_4I_colPBond <- correlations_4I(merged_results)
+#save dfs
+setwd("~/R/PNASrevisions/Outputs/Data/2021_10_15_shuffled_spearmanCorrelations")
+write_csv(cor_48I_colPBond, "SpearmanCorrelations_truecolPBond_shuff48I_50.txt")
+write_csv(cor_4I_colPBond, "SpearmanCorrelations_truecolPBond_shuff4I_50.txt")
+```
+
+#plot histograms of the pvalues and rho for 48I and 4I correlations
+```{r}
+hist(cor_48I_colPBond$pvalue)
+hist(cor_48I_colPBond$rho)
+hist(cor_4I_colPBond$pvalue)
+hist(cor_4I_colPBond$rho)
+```
+
+#determine true correlations of colPBond vs 48I and colPBond vs 4I
+```{r}
+#DESeq for 48I
+dds <- DESeqDataSetFromMatrix(countData = inputs, colData = metrics, design = ~ParentCode + PairingAgeCat + Cohort)
+dds <- DESeq(dds)
+
+res.48I <- as.data.frame(results(dds, contrast = c("Cohort", "OS48I", "SS48I"), alpha = 0.05, pAdjustMethod = "fdr")) %>% rownames_to_column("genes") %>% dplyr::select(c(1,3)) %>% dplyr::rename("48IL2FC" = 2)
+res.4I <- as.data.frame(results(dds, contrast = c("Cohort", "OS4I", "SS4I"), alpha = 0.05, pAdjustMethod = "fdr")) %>% rownames_to_column("genes") %>% dplyr::select(c(1,3)) %>% dplyr::rename("4IL2FC" = 2)
+```
+
+#merge true L2FC values into one data frame and run correlations
+```{r}
+merged_true <- left_join(true_colPBond[[1]], res.48I, by = "genes") %>% left_join(. , res.4I, by = "genes")
+
+#run correlations
+true_48Icorr <- cor.test(merged_true$colPBondL2FC, merged_true$`48IL2FC`, method = "spearman")
+true_48Icorr_rho <- as.data.frame(true_48Icorr[["estimate"]][["rho"]]) %>% dplyr::rename("rho" = 1)
+true_48Icorr_pvalue <- as.data.frame(true_48Icorr[["p.value"]]) %>% dplyr::rename("pvalue" = 1)
+true_48Icorr_pvalue <- true_48Icorr_pvalue %>% mutate(pvalue = -log10(pvalue))
+true_48Icorr_values <- cbind(true_48Icorr_rho, true_48Icorr_pvalue)
+
+true_4Icorr <- cor.test(merged_true$colPBondL2FC, merged_true$`4IL2FC`, method = "spearman")
+true_4Icorr_rho <- as.data.frame(true_4Icorr[["estimate"]][["rho"]]) %>% dplyr::rename("rho" = 1)
+true_4Icorr_pvalue <- as.data.frame(true_4Icorr[["p.value"]]) %>% dplyr::rename("pvalue" = 1)
+true_4Icorr_pvalue <- true_4Icorr_pvalue %>% mutate(pvalue = -log10(pvalue))
+true_4Icorr_values <- cbind(true_4Icorr_rho, true_4Icorr_pvalue)
+```
+
+#true correlation values
+```{r}
+true_48Icorr_values
+true_4Icorr_values
+```
+
+#plot true values on hist of shuffled values
+```{r, fig.height= 6}
+hist(cor_48I_colPBond$pvalue)
+abline(v = true_48Icorr_values$pvalue, col = "red", lwd = 5)
+hist(cor_4I_colPBond$pvalue)
+abline(v = true_4Icorr_values$pvalue, col = "red", lwd = 5)
+
+hist(cor_48I_colPBond$rho)
+abline(v = true_48Icorr_values$rho, col = "red", lwd = 5)
+hist(cor_4I_colPBond$rho)
+abline(v = true_4Icorr_values$rho, col = "red", lwd = 5)
+```
+I ran the remaining permutations in the terminal as it was slightly faster. I'm importing the results below. 
+
+import previous shuffle dfs
+```{r}
+shuff48I_50 <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff48I_50.txt")
+shuff48I_50_2nd <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff48I_50th_2nd.txt")
+shuff48I_100 <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff48I_100.txt")
+shuff48I_100_2nd <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff48I_100_2nd.txt")
+shuff48I_200 <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff48I_200.txt")
+shuff48I_200_2nd <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff48I_200_2nd.txt")
+shuff48I_200_3rd <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff48I_200_3rd.txt")
+
+shuff4I_50 <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff4I_50.txt")
+shuff4I_50_2nd <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff4I_50th_2nd.txt")
+shuff4I_100 <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff4I_100.txt")
+shuff4I_100_2nd <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff4I_100_2nd.txt")
+shuff4I_200 <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff4I_200.txt")
+shuff4I_200_2nd <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff4I_200_2nd.txt")
+shuff4I_200_3rd <- read.csv("{dir}/SpearmanCorrelations_truecolPBond_shuff4I_200_3rd.txt")
+```
+
+#merge all together
+```{r}
+cor_48I_colPBond_all <- rbind(shuff48I_50, shuff48I_50_2nd, shuff48I_100, shuff48I_100_2nd, shuff48I_200, shuff48I_200_2nd, shuff48I_200_3rd)
+cor_48I_colPBond_all <- cor_48I_colPBond_all[!is.infinite(rowSums(cor_48I_colPBond_all)), ]
+cor_4I_colPBond_all <- rbind(shuff4I_50, shuff4I_50_2nd, shuff4I_100, shuff4I_100_2nd, shuff4I_200, shuff4I_200_2nd, shuff4I_200_3rd)
+cor_4I_colPBond_all <- cor_4I_colPBond_all[!is.infinite(rowSums(cor_4I_colPBond_all)), ]
+
+nrow(cor_48I_colPBond_all)
+nrow(cor_4I_colPBond_all)
+#save csv files
+```
+
+plot remaining correlations
+```{r}
+pdf("True colPBond and shuffled 48I pvalue.pdf")
+hist(cor_48I_colPBond_all$pvalue, ylim = c(0, 250))
+abline(v = true_48Icorr_values$pvalue, col = "red", lwd = 5)
+dev.off()
+pdf("True colPBond and shuffled 4I pvalue.pdf")
+hist(cor_4I_colPBond_all$pvalue, ylim = c(0, 250)) 
+abline(v = true_4Icorr_values$pvalue, col = "red", lwd = 5)
+dev.off()
+
+pdf("True colPBond and shuffled 48I rho.pdf")
+hist(cor_48I_colPBond_all$rho, ylim = c(0, 75))
+abline(v = true_48Icorr_values$rho, col = "red", lwd = 5)
+dev.off()
+pdf("True colPBond and shuffled 4I rho.pdf")
+hist(cor_4I_colPBond_all$rho, ylim = c(0, 75)) 
+abline(v = true_4Icorr_values$rho, col = "red", lwd = 5)
+dev.off()
+```
+
+Determine how many shuffled values are greater than the true values?
+```{r}
+#pvalues
+tail_48I <- cor_48I_colPBond_all %>% filter(pvalue > true_48Icorr_values$pvalue)
+percent_48I <- as.data.frame(nrow(tail_48I)/nrow(cor_48I_colPBond_all))*100
+percent_48I
+
+tail_4I <- cor_4I_colPBond_all %>% filter(pvalue > true_4Icorr_values$pvalue)
+percent_4I <- as.data.frame(nrow(tail_4I)/nrow(cor_4I_colPBond_all))*100
+percent_4I
+
+#rho
+tail_48I <- cor_48I_colPBond_all %>% filter(rho > true_48Icorr_values$rho)
+percent_48I <- as.data.frame(nrow(tail_48I)/nrow(cor_48I_colPBond_all))*100
+percent_48I
+
+tail_4I <- cor_4I_colPBond_all %>% filter(rho > true_4Icorr_values$rho)
+percent_4I <- as.data.frame(nrow(tail_4I)/nrow(cor_4I_colPBond_all))*100
+percent_4I
+
+```
+Finally I selected at random a shuffled 48I and real 4I that were put in to Morpheus to compare the log2FoldChange values. I also did this for the true short-term pair bond vs shuffled long-term pair bond data. 
+
+
+#plot
+```{r}
+hist(cor_RP_all$rho)
+hist(cor_RP_all$pvalue)
+```
+
+calculating true corrleation between 48P and 4P
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = inputs, colData = metrics, design = ~ParentCode + PairingAgeCat + Cohort)
+dds <- DESeq(dds)
+
+res.48P <- as.data.frame(results(dds, contrast = c("Cohort", "OS48P", "SS48P"), alpha = 0.05, pAdjustMethod = "fdr")) %>% rownames_to_column("genes") %>% dplyr::select(c(1,3)) %>% dplyr::rename("P48L2FC" = 2)
+res.4P <- as.data.frame(results(dds, contrast = c("Cohort", "OS4P", "SS4P"), alpha = 0.05, pAdjustMethod = "fdr")) %>% rownames_to_column("genes") %>% dplyr::select(c(1,3)) %>% dplyr::rename("P4L2FC" = 2)
+
+merged_true <- left_join(res.48P, res.4P, by = "genes")
+
+#run correlations
+true_RP_corr <- cor.test(merged_true$P48L2FC, merged_true$P4L2FC, method = "spearman")
+true_RP_corr_rho <- as.data.frame(true_RP_corr[["estimate"]][["rho"]]) %>% dplyr::rename("rho" = 1)
+true_RP_corr_pvalue <- as.data.frame(true_RP_corr[["p.value"]]) %>% dplyr::rename("pvalue" = 1)
+true_RP_corr_pvalue <- true_RP_corr_pvalue %>% mutate(pvalue = -log10(pvalue))
+true_RP_corr_values <- cbind(true_RP_corr_rho, true_RP_corr_pvalue)
+```
+
+plot the true correlation value
+```{r}
+hist(cor_RP_all$rho, ylim = c(0, 60), xlim = c(-0.4, 0.4))
+abline(v = true_RP_corr_values$rho, col = "red", lwd = 5)
+```
+

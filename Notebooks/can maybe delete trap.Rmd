@@ -1,0 +1,264 @@
+---
+title: "Misc TRAP analyses"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+#load libraries 
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggfortify)
+library(ggrepel)
+library(GGally)
+library(viridis)
+library(readxl)
+library(car)
+library(gridExtra)
+library(ggpubr)
+library(DESeq2)
+library(EnhancedVolcano)
+library(DOSE)
+library(enrichplot)
+library(ggpubr)
+library(UpSetR)
+library(scales)
+library(stringi)
+library(SuperExactTest)
+library(clusterProfiler)
+source({dir}/Functions/DESeq_DEGs.R")
+source({dir}/Functions/convert_voleToMouse_geneIDs.R")
+source({dir}/Functions/plot_GOanlaysis.R")
+source('~/R/thesis2/RNAseq/Functions/filtered_GOterms.R')
+```
+
+#ok, I first want to filter the bulk RNAseq of combined pair bond, ST sep, and LT sep by the up and downreg DEGs of the OSvSS4I pulldowns
+#import data
+```{r}
+#bulk RNAseq
+allgenes_colPBond <- read.csv({dir}/Outputs/Data/DEGs/2021_05_11_DESeq/DESeq results_collaspedPBond.txt")
+allgenes_48I <- read.csv({dir}/Outputs/Data/DEGs/2021_05_11_DESeq/DESeq results_OSvSS48I.txt")
+allgenes_4I <- read.csv({dir}/Outputs/Data/DEGs/2021_05_11_DESeq/DESeq results_OSvSS4I.txt")
+
+#OSvSS4I DEGs
+OSvSS4I_downreg <- read.csv({dir}/Outputs/Data/DEGs/2021_05_20_TRAPonly/TRAP pulldowns of OS4I vs SS4I downreg results df.txt")
+OSvSS4I_upreg <- read.csv({dir}/Outputs/Data/DEGs/2021_05_20_TRAPonly/TRAP pulldowns of OS4I vs SS4I upreg results df.txt")
+```
+
+#ok now filter the "allgenes" dfs by each of the up/downreg dfs
+```{r}
+upreg4I_colPBond <- allgenes_colPBond %>% filter(genes %in% OSvSS4I_upreg$genes)
+upreg4I_48I <- allgenes_48I %>% filter(genes %in% OSvSS4I_upreg$genes)
+upreg4I_4I <- allgenes_4I %>% filter(genes %in% OSvSS4I_upreg$genes)
+
+downreg4I_colPBond <- allgenes_colPBond %>% filter(genes %in% OSvSS4I_downreg$genes)
+downreg4I_48I <- allgenes_48I %>% filter(genes %in% OSvSS4I_downreg$genes)
+downreg4I_4I <- allgenes_4I %>% filter(genes %in% OSvSS4I_downreg$genes)
+```
+
+#ok now select just the L2FC column for morpheus
+```{r}
+forM_upreg_colPBond <- upreg4I_colPBond %>% select(c(1,3)) %>% rename("colPBond_L2FC_filteredup4IP" = 2)
+forM_upreg_48I <- upreg4I_48I %>% select(c(1,3)) %>% rename("48I_L2FC_filteredup4IP" = 2)
+forM_upreg_4I <- upreg4I_4I %>% select(c(1,3)) %>% rename("4I_L2FC_filteredup4IP" = 2)
+
+forM_downreg_colPBond <- downreg4I_colPBond %>% select(c(1,3)) %>% rename("colPBond_L2FC_filtereddown4IP" = 2)
+forM_downreg_48I <- downreg4I_48I %>% select(c(1,3)) %>% rename("48I_L2FC_filtereddown4IP" = 2)
+forM_downreg_4I <- downreg4I_4I %>% select(c(1,3)) %>% rename("4I_L2FC_filtereddown4IP" = 2)
+
+#join for morpheus
+forM_upreg_filterOSvSS4Ip <- left_join(forM_upreg_colPBond, forM_upreg_48I, by = "genes")
+forM_upreg_filterOSvSS4Ip <- left_join(forM_upreg_filterOSvSS4Ip, forM_upreg_4I, by = "genes")
+
+forM_downreg_filterOSvSS4Ip <- left_join(forM_downreg_colPBond, forM_downreg_48I, by = "genes")
+forM_downreg_filterOSvSS4Ip <- left_join(forM_downreg_filterOSvSS4Ip, forM_downreg_4I, by = "genes")
+
+setwd({dir}/Outputs/Data/DEGs/2021_06_21_TRAPmorpheus")
+write_csv(forM_upreg_filterOSvSS4Ip, "Bulk colPBond_STsep_LTsep filtered by OSvSS4I pulldowns upreg DEGs.txt")
+write_csv(forM_downreg_filterOSvSS4Ip, "Bulk colPBond_STsep_LTsep filtered by OSvSS4I pulldowns downreg DEGs.txt")
+```
+#ok, I think this looks good where the up/downreg genes of OSvSS4I have opposite regulation in the pair bonded animals 
+
+#let's try to color code the OSvSS4I pulldowns only plot by the gene cluster colors 
+#import TRAP only data
+```{r}
+TRAP_samples <- read.csv("{dir}/Data/Merged TRAP.Inputs.Pulldowns.txt") 
+TRAP_samples <- TRAP_samples %>% distinct(genes, .keep_all = TRUE) %>% filter(!is.na(genes)) %>% column_to_rownames("genes") %>% filter_all(all_vars(.>10))
+TRAP_samples_pulldownsonly <- TRAP_samples %>% select(-contains("I"))
+#TRAP_samples_pulldownsonly <- TRAP_samples_pulldownsonly %>% column_to_rownames("genes")
+TRAP_samples_inputsonly <- TRAP_samples %>% select(contains("I"))
+#TRAP_samples_inputsonly <- TRAP_samples %>% column_to_rownames("genes")
+
+TRAPonly_metrics <- read_excel({dir}/Data/all_RNAseq_metrics.xlsx", sheet = "TRAP samples only CO")
+TRAPonly_metrics <- mutate_at(TRAPonly_metrics, vars("Animal", "Cohort", "Pairing", "Timepoint", "Separation", "ProcessingGroup", "PartnerPreference", "DissectionOrder", "ParentCode", "RIN", "InputRNA", "AgeAtPairing", "AgeAtSAC", "IorP", "PairingAgeCat"), as.factor)
+#making metrics for only pulldown samples, rows 21:40
+metrics_pulldownsonly <- TRAPonly_metrics[c(21:40),]
+#making metrics for only input samples, rows 1:21
+metrics_inputsonly <- TRAPonly_metrics[c(1:20), ]
+```
+
+#run DESeq
+```{r}
+dds.pulldowns <- DESeqDataSetFromMatrix(countData = TRAP_samples_pulldownsonly, colData = metrics_pulldownsonly, design = ~ParentCode + Cohort)
+dds.pulldowns <- DESeq(dds.pulldowns)
+
+res.OSvSS4I_P <- results(dds.pulldowns, contrast = c("Cohort", "OS4I", "SS4I"), alpha = 0.05, pAdjustMethod = "fdr")
+res.OS4Paired_Isolated <- results(dds.pulldowns, contrast = c("Cohort", "OS4I", "OS4P"), alpha = 0.05, pAdjustMethod = "fdr")
+
+res.OSvSS4I_P.df <- as.data.frame(res.OSvSS4I_P) %>% rownames_to_column("genes")
+res.OS4Paired_Isolated.df <- as.data.frame(res.OS4Paired_Isolated) %>% rownames_to_column("genes")
+```
+
+
+```{r}
+EnhancedVolcano(res.OSvSS4I_P, lab = rownames(res.OSvSS4I_P), x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+
+EnhancedVolcano(res.OS4Paired_Isolated, lab = rownames(res.OS4Paired_Isolated), x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+```
+
+#ok now try to color code by neuronal clusters of interest
+#import neuronal clusters
+```{r}
+neuronal_clusters <- read_excel({dir}/Data/clustered DESeq of bulk and neuronal colPBond_STsep_LTsep.xlsx", sheet = "neuronal only clusters edited")
+
+neuronal_red <- neuronal_clusters %>% filter(cluster_color == "red") #color in fig is #9a8f97
+neuronal_pink <- neuronal_clusters %>% filter(cluster_color == "pink") #color in fig is #83e377
+neuronal_babyblue <- neuronal_clusters %>% filter(cluster_color == "babyblue") #color in fig is #e9e3e6
+```
+
+#set keyvals
+```{r}
+#color keyvals
+keyvals <- ifelse(res.OSvSS4I_P.df$genes %in% neuronal_red$genes, "#54478c", 
+  ifelse(res.OSvSS4I_P.df$genes %in% neuronal_pink$genes, "#efea5a", 
+         ifelse(res.OSvSS4I_P.df$genes %in% neuronal_babyblue$genes, "#D26D0F", "gray85")))
+keyvals[is.na(keyvals)] <- "gray85"
+names(keyvals)[keyvals == "#54478c"] <- 'Ncluster_1'
+names(keyvals)[keyvals == "#efea5a"] <- 'Ncluster_2'
+names(keyvals)[keyvals == "#D26D0F"] <- 'Ncluster_3'
+names(keyvals)[keyvals == "gray85"] <- 'NotInCluster'
+
+
+EnhancedVolcano(res.OSvSS4I_P, lab = rownames(res.OSvSS4I_P), selectLab = c("DRD1A", "DRD2", "Pdyn"), x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, colCustom = keyvals, title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1.5, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 1) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+
+```
+
+#set keyvals
+```{r}
+#color keyvals
+keyvals <- ifelse(res.OS4Paired_Isolated.df$genes %in% neuronal_red$genes, "#54478c", 
+  ifelse(res.OS4Paired_Isolated.df$genes %in% neuronal_pink$genes, "#efea5a", 
+         ifelse(res.OS4Paired_Isolated.df$genes %in% neuronal_babyblue$genes, "#D26D0F", "gray85")))
+keyvals[is.na(keyvals)] <- "gray85"
+names(keyvals)[keyvals == "#54478c"] <- 'Ncluster_1'
+names(keyvals)[keyvals == "#efea5a"] <- 'Ncluster_2'
+names(keyvals)[keyvals == "#D26D0F"] <- 'Ncluster_3'
+names(keyvals)[keyvals == "gray85"] <- 'NotInCluster'
+
+
+EnhancedVolcano(res.OS4Paired_Isolated, lab = rownames(res.OS4Paired_Isolated), selectLab = c("DRD1A", "DRD2", "Pdyn"), x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, colCustom = keyvals, title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1.5, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 1) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+```
+
+#hmm, I'm not sure if this is actually what we want to do if we want to ask about RESISTENT to separation genes but let's get the res.OS4Paired_Isolated DEGs in morpheus form and cluster
+```{r}
+# OS4Isolated_Paired_pulldowns <- deg(res.OS4Paired_Isolated.df)
+# savedegs(OS4Isolated_Paired_pulldowns, {dir}/Outputs/Data/DEGs/2021_06_21_TRAPmorpheus")
+#upreg
+forM_OS4IP_colPBond <- allgenes_colPBond %>% filter(genes %in% OS4Isolated_Paired_pulldowns[["upreg_DEGs_genesonly"]]$genes) %>% select(c(1,3)) %>% rename("colPBondL2FC" = 2)
+forM_OS4IP_48I <- allgenes_48I %>% filter(genes %in% OS4Isolated_Paired_pulldowns[["upreg_DEGs_genesonly"]]$genes) %>% select(c(1,3)) %>% rename("48IL2FC" = 2)
+forM_OS4IP_4I <- allgenes_4I %>% filter(genes %in% OS4Isolated_Paired_pulldowns[["upreg_DEGs_genesonly"]]$genes) %>% select(c(1,3)) %>% rename("4IL2FC" = 2)
+
+forM <- left_join(forM_OS4IP_colPBond, forM_OS4IP_48I, by = "genes")
+forM <- left_join(forM, forM_OS4IP_4I, by = "genes")
+setwd({dir}/Outputs/Data/DEGs/2021_06_21_TRAPmorpheus")
+write_csv(forM, "Bulk colPBond_STsep_LTsep filtered by OS4IsovPaired pulldowns upreg DEGs.txt")
+
+#downreg
+forM_OS4IP_colPBond2 <- allgenes_colPBond %>% filter(genes %in% OS4Isolated_Paired_pulldowns[["downreg_DEGs_genesonly"]]$genes) %>% select(c(1,3)) %>% rename("colPBondL2FC" = 2)
+forM_OS4IP_48I2 <- allgenes_48I %>% filter(genes %in% OS4Isolated_Paired_pulldowns[["downreg_DEGs_genesonly"]]$genes) %>% select(c(1,3)) %>% rename("48IL2FC" = 2)
+forM_OS4IP_4I2 <- allgenes_4I %>% filter(genes %in% OS4Isolated_Paired_pulldowns[["downreg_DEGs_genesonly"]]$genes) %>% select(c(1,3)) %>% rename("4IL2FC" = 2)
+
+forM2 <- left_join(forM_OS4IP_colPBond2, forM_OS4IP_48I2, by = "genes")
+forM2 <- left_join(forM2, forM_OS4IP_4I2, by = "genes")
+setwd({dir}/Outputs/Data/DEGs/2021_06_21_TRAPmorpheus")
+write_csv(forM2, "Bulk colPBond_STsep_LTsep filtered by OS4IsovPaired pulldowns downreg DEGs.txt")
+```
+
+#find where the OS4IvP DEGs are in the Sankey clusters of neuronal genes
+```{r}
+upreg_DEGs <- as.data.frame(OS4Isolated_Paired_pulldowns[["upreg_DEGs_genesonly"]]$genes) %>% rename("genes" = 1)
+downreg_DEGs <- as.data.frame(OS4Isolated_Paired_pulldowns[["downreg_DEGs_genesonly"]]$genes) %>% rename("genes" = 1)
+sum_red <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "red")
+sum_orange <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "orange")
+sum_yellow <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "yellow")
+sum_green <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "green")
+sum_blue <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "blue")
+sum_purple <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "purple")
+sum_periwinkle <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "periwinkle")
+sum_pink <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "pink")
+sum_teal <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "teal")
+sum_limegreen <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "limegreen")
+sum_babyblue <- sankey_overlap_wDEGs(neuronal_clusters, upreg_DEGs, clusterColor = "babyblue")
+upreg_overlap <- list(c(sum_red, sum_orange, sum_yellow, sum_green, sum_blue, sum_purple, sum_periwinkle, sum_pink, sum_teal, sum_limegreen, sum_babyblue))
+
+
+sum_red <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "red")
+sum_orange <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "orange")
+sum_yellow <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "yellow")
+sum_green <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "green")
+sum_blue <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "blue")
+sum_purple <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "purple")
+sum_periwinkle <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "periwinkle")
+sum_pink <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "pink")
+sum_teal <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "teal")
+sum_limegreen <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "limegreen")
+sum_babyblue <- sankey_overlap_wDEGs(neuronal_clusters, downreg_DEGs, clusterColor = "babyblue")
+downreg_overlap <- list(c(sum_red, sum_orange, sum_yellow, sum_green, sum_blue, sum_purple, sum_periwinkle, sum_pink, sum_teal, sum_limegreen, sum_babyblue))
+```
+
+#ok in Morpheus I clustered the OSvSS4I Inputs vs Pulldowns with only genes from pulldowns. I then took two clusters that had "differential" expression between the inputs and pulldowns. Running GO on those terms
+```{r}
+#import data 
+IvP_OSvSS4I <- read_excel("Input_v_Pulldowns of OSvSS4I.xlsx", sheet = "from_M")
+IvP_OSvSS4I_clust1 <- read_excel({dir}/Outputs/Data/DEGs/2021_06_21_TRAPmorpheus/Input_v_Pulldowns of OSvSS4I.xlsx", sheet = "Sheet1")
+```
+
+#import mouse genome for converting ids
+```{r}
+mart_export_PVEnsembl_mouseEnsembl_mousegeneName <- read.csv("~/R/Thesis/RNAseq/Data/mart_export_PVEnsembl_mouseEnsembl_mousegeneName.txt", stringsAsFactors=FALSE)
+
+#getting a biomart df that only contains rows that have mouse stable IDs 
+biomart_mouseE <- filter(mart_export_PVEnsembl_mouseEnsembl_mousegeneName, trimws(Mouse.gene.stable.ID) !="")
+```
+
+#run GO
+```{r}
+go.IvP_OSvSS4I <- vole_to_mouse(IvP_OSvSS4I)
+go.IvP_OSvSS4I_clust1 <- vole_to_mouse(IvP_OSvSS4I_clust1)
+go.IvP_OSvSS4I.plot.bp <- enrichGO(go.IvP_OSvSS4I$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+go.IvP_OSvSS4I_c1.plot.bp <- enrichGO(go.IvP_OSvSS4I_clust1$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr", readable = TRUE)
+
+#plot
+barplot(go.IvP_OSvSS4I.plot.bp, showCategory =  20)
+barplot(go.IvP_OSvSS4I_c1.plot.bp, showCategory = 20)
+```
+
+#sending to Deena for IPA are the genes in cluster "red," "pink," and "babyblue" since they have interesting patterns. Using the bulk RNAseq data of colPBond, STsep, and LTsep. 
+```{r}
+#import intersection genes 
+#int_neuronal <- read.csv({dir}/Outputs/Data/DEGs/2021_06_06_morpheus/intersection neuronal genes filter DESeq RP_STsep_LTsep for Morpheus.txt")
+
+#filter the int_neuronal df by the genes in the neuronal clusters above 
+forDeena_red <- int_neuronal %>% filter(genes %in% neuronal_red$genes)
+forDeena_pink <- int_neuronal %>% filter(genes %in% neuronal_pink$genes)
+forDeena_babyblue <- int_neuronal %>% filter(genes %in% neuronal_babyblue$genes)
+
+setwd({dir}/Outputs/Data/DEGs/2021_06_21_TRAPmorpheus")
+write_csv(forDeena_red, "neuronal_clust1.txt")
+write_csv(forDeena_pink, "neuronal_clust2.txt")
+write_csv(forDeena_babyblue, "neuronal_clust3.txt")
+```
+
+
+#re-save intersection genes to just have gene names for Enrichr

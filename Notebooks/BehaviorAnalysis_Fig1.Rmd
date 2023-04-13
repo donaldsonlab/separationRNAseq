@@ -1,0 +1,707 @@
+---
+title: "Behavior analysis for Figure 1"
+output: html_notebook
+---
+R notebook to analyze behavior data for Prolonged partner separation erodes nucleus accumbens transcriptional signatures of pair bonding in male prairie voles. eLife 12:e80517.
+
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+load libraries
+```{r}
+library(tidyverse)
+library(plyr)
+library(ggplot2)
+library(readxl)
+library(car)
+library(rstatix)
+library(ggpubr)
+library(ggfortify)
+library(gridExtra)
+library(GGally)
+library(ggridges)
+library(stringr)
+library(survival)
+library(survminer)
+library(corrplot)
+source("~/R/eLife_revisions/functions/mod_sep_PPTs_huddles.R")
+source("~/R/eLife_revisions/functions/mod_sep_PPTs_huddles_p1vp2.R")
+source("C:/Users/Julie/Documents/R/eLife_revisions/functions/make_tidy.R")
+source("C:/Users/Julie/Documents/R/eLife_revisions/functions/get_partner_Latency.R")
+source("C:/Users/Julie/Documents/R/eLife_revisions/functions/get_novel_Latency.R")
+source("~/R/eLife_revisions/functions/get_latency.R")
+source("C:/Users/Julie/Documents/R/eLife_revisions/functions/relevel.R")
+source("~/R/thesis2/SeparationBehaviors/Functions/behavior_stats.R")
+source("~/R/eLife_revisions/functions/corr_plotting.R")
+source("C:/Users/Julie/Documents/R/eLife_revisions/functions/clustered_corr_plotting.R")
+```
+
+import data
+```{r}
+rp <- read_excel("{dir}/eLife_remainPaired.xlsx", sheet = "for_paper")
+sep48hrs <- read_excel("{dir}/eLife_48hrsSep.xlsx", sheet = "for_paper")
+sep4wks <- read_excel("{dir}/eLife_4wksSep.xlsx", sheet = "for_paper")
+
+rp_matrix <- read_excel("{dir}/eLife_remainPaired.xlsx", sheet = "matrix")
+sep48hrs_matrix <- read_excel("{dir}/eLife_48hrsSep.xlsx", sheet = "matrix")
+sep4wks_matrix <- read_excel("{dir}/eLife_4wksSep.xlsx", sheet = "matrix")
+```
+
+modify dataframes
+```{r}
+#factor variables
+rp <- mutate_at(rp, vars(Animal, Cohort, PairingType, Timepoint, Condition), as.factor)
+sep48hrs <- mutate_at(sep48hrs, vars(Animal, Cohort, PairingType, Timepoint, Condition), as.factor)
+sep4wks <- mutate_at(sep4wks, vars(Animal, Cohort, PairingType, Timepoint, Condition), as.factor)
+
+rp_matrix <- mutate_at(rp_matrix, vars(Animal, PairingType), as.factor)
+sep48hrs_matrix <- mutate_at(sep48hrs_matrix, vars(Animal, PairingType), as.factor)
+sep4wks_matrix <- mutate_at(sep4wks_matrix, vars(Animal, PairingType), as.factor)
+
+rp_matrix_os <- rp_matrix %>% filter(PairingType == "OS")
+rp_matrix_ss <- rp_matrix %>% filter(PairingType == "SS")
+sep48hrs_matrix_os <- sep48hrs_matrix %>% filter(PairingType == "OS")
+sep48hrs_matrix_ss <- sep48hrs_matrix %>% filter(PairingType == "SS")
+sep4wks_matrix_os <- sep4wks_matrix %>% filter(PairingType == "OS")
+sep4wks_matrix_ss <- sep4wks_matrix %>% filter(PairingType == "SS")
+
+#remove animal 5320 because it spent most of it's time by itself. 
+sep4wks <- sep4wks %>% filter(Animal != "5320")
+
+all_data <- rbind(rp, sep48hrs, sep4wks)
+
+#re-level for plotting
+rp$Timepoint <- factor(rp$Timepoint, levels = c("baseline", "48hrs", "4wks"))
+sep48hrs$Timepoint <- factor(sep48hrs$Timepoint, levels = c("baseline", "endpoint"))
+sep4wks$Timepoint <- factor(sep4wks$Timepoint, levels = c("baseline", "endpoint"))
+all_data$Timepoint <- factor(all_data$Timepoint, levels = c("baseline", "48hrs", "4wks", "endpoint"))
+
+#add column for time in chamber that is not huddling ie. pCTOnly or nCTOnly for partner chamber time only etc.
+rp <- rp %>% mutate(pCTOnly = (pCTime - abspHuddle)) %>% mutate(nCTOnly = (nCTime - absnHuddle))
+sep48hrs <- sep48hrs %>% mutate(pCTOnly = (pCTime - abspHuddle)) %>% mutate(nCTOnly = (nCTime - absnHuddle))
+sep4wks <- sep4wks %>% mutate(pCTOnly = (pCTime - abspHuddle)) %>% mutate(nCTOnly = (nCTime - absnHuddle))
+
+#make tidy dfs for huddle durations
+rp_baseline <- huddle_make_tidy(rp, "baseline")
+rp_48hrs <- huddle_make_tidy(rp, "48hrs")
+rp_4wks <- huddle_make_tidy(rp, "4wks")
+rp_huddles <- rbind(rp_baseline, rp_48hrs) %>% rbind(., rp_4wks)
+
+sep48hrs_baseline <- huddle_make_tidy(sep48hrs, "baseline")
+sep48hrs_endpoint <- huddle_make_tidy(sep48hrs, "endpoint")
+sep48hrs_huddles <- rbind(sep48hrs_baseline, sep48hrs_endpoint)
+
+sep4wks_baseline <- huddle_make_tidy(sep4wks, "baseline")
+sep4wks_endpoint <- huddle_make_tidy(sep4wks, "endpoint")
+sep4wks_huddles <- rbind(sep4wks_baseline, sep4wks_endpoint)
+
+#now make a single huddle duration df
+baselines_allData <- rbind(sep48hrs_baseline, sep4wks_baseline)
+endpoints_allData <- rbind(sep48hrs_endpoint, sep4wks_endpoint)
+
+huddles_allData <- rbind(baselines_allData, endpoints_allData)
+
+rp_allHuddles <- rbind(rp_baseline, rp_48hrs, rp_4wks)
+```
+
+plot line graph of percent partner preference
+```{r}
+ggline(rp, x = "Timepoint", y = "pHuddle", color = "PairingType", add = c("mean_se", "jitter"), palette = c("#324448", "#b6cdb1"), point.size = 1.25) + labs(y = "Partner preference (%)") + geom_hline(yintercept=50, linetype="longdash", size = 0.5, color = "black") + geom_hline(yintercept = 66, linetype = "longdash", size = 0.5, color = "grey") + ylim(0,101)
+
+ggline(sep48hrs, x = "Timepoint", y = "pHuddle", color = "PairingType", add = c("mean_se", "jitter"), palette = c("#324448", "#b6cdb1"), point.size = 1.25) + labs(y = "Partner preference (%)") + geom_hline(yintercept=50, linetype="longdash", size = 0.5, color = "black") + geom_hline(yintercept = 66, linetype = "longdash", size = 0.5, color = "grey") + ylim(0,101)
+
+ ggline(sep4wks, x = "Timepoint", y = "pHuddle", color = "PairingType", add = c("mean_se", "jitter"), palette = c("#324448", "#b6cdb1"), point.size = 1.25) + labs(y = "Partner preference (%)") + geom_hline(yintercept=50, linetype="longdash", size = 0.5, color = "black") + geom_hline(yintercept = 66, linetype = "longdash", size = 0.5, color = "grey") + ylim(0,101)
+```
+
+Boxplots with lines connecting animals for partner and novel raw huddle times for remain paired animals
+```{r}
+ggpaired(rp_baseline,  x = "stimulus", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Conspecific") +
+  ylim(0, 10000)
+
+ggpaired(rp_48hrs,  x = "stimulus", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Conspecific") +
+  ylim(0, 10000)
+
+ggpaired(rp_4wks,  x = "stimulus", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Conspecific") +
+  ylim(0, 10000)
+```
+huddles for partner and novels separatly over time
+```{r}
+rp_allHuddles_partner <- rp_allHuddles %>% filter(stimulus == "partner")
+rp_allHuddles_novel <- rp_allHuddles %>% filter(stimulus == "novel")
+
+ggpaired(rp_allHuddles_partner,  x = "Timepoint", y = "raw_huddle_time",
+        color = "PairingType", line.color = "black", line.size = 0.4,
+        palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+ylab("Huddle Duration (sec)") + xlab("Timepoint") +
+ylim(0, 10000)
+ 
+ggpaired(rp_allHuddles_novel,  x = "Timepoint", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Timepoint") +
+  ylim(0, 5000)
+```
+
+
+Boxplots with lines connecting animals for partner and novel raw huddle times for separation animals
+```{r}
+ggpaired(sep48hrs_baseline, x = "stimulus", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Conspecific") +
+  ylim(0, 10000)
+
+
+ggpaired(sep48hrs_endpoint, x = "stimulus", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Conspecific") +
+  ylim(0, 10000)
+
+ggpaired(sep4wks_baseline, x = "stimulus", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Conspecific") +
+  ylim(0, 10000)
+
+
+ggpaired(sep4wks_endpoint, x = "stimulus", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Conspecific") +
+  ylim(0, 10000)
+```
+huddles for partner and novels separatly over time
+```{r}
+#for 48hrs separated animals
+sep48hrs_huddles_partner <- sep48hrs_huddles %>% filter(stimulus == "partner")
+sep48hrs_huddles_novel <- sep48hrs_huddles %>% filter(stimulus == "novel")
+
+ggpaired(sep48hrs_huddles_partner,  x = "Timepoint", y = "raw_huddle_time",
+        color = "PairingType", line.color = "black", line.size = 0.4,
+        palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+ylab("Huddle Duration (sec)") + xlab("Timepoint") +
+ylim(0, 10000)
+ 
+ggpaired(sep48hrs_huddles_novel,  x = "Timepoint", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Timepoint") +
+  ylim(0, 2000)
+
+
+#for 4wks separated animals
+sep4wks_huddles_partner <- sep4wks_huddles %>% filter(stimulus == "partner") 
+sep4wks_huddles_novel <- sep4wks_huddles %>% filter(stimulus == "novel")
+
+ggpaired(sep4wks_huddles_partner,  x = "Timepoint", y = "raw_huddle_time",
+        color = "PairingType", line.color = "black", line.size = 0.4,
+        palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+ylab("Huddle Duration (sec)") + xlab("Timepoint") +
+ylim(0, 10000)
+ 
+ggpaired(sep4wks_huddles_novel,  x = "Timepoint", y = "raw_huddle_time",
+         color = "PairingType", line.color = "black", line.size = 0.4,
+         palette = c("#324448", "#b6cdb1"), id = "Animal") + 
+  facet_wrap(~PairingType, labeller = labeller(PairingType = c("OS" = "Opposite-sex", "SS" = "Same-sex"))) + 
+  theme(strip.background = element_rect(color = "white"), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) + 
+  ylab("Huddle Duration (sec)") + xlab("Timepoint") +
+  ylim(0, 2000)
+```
+
+change scores for partner preference 
+import change score data
+```{r}
+rp_cs <- read_excel("{dir}/eLife_remainPaired.xlsx", sheet = "change_scores")
+sep48hrs_cs <- read_excel("{dir}/eLife_48hrsSep.xlsx", sheet = "change_scores")
+sep4wks_cs <- read_excel("{dir}/eLife_4wksSep.xlsx", sheet = "change_scores")
+
+#modify
+rp_cs <- mutate_at(rp_cs, vars(Animal, PairingType, Comparison), as.factor) %>% mutate("Condition" = rep(c("remainPaired")))
+sep48hrs_cs <- mutate_at(sep48hrs_cs, vars(Animal, PairingType, Comparison), as.factor) %>% mutate("Condition" = rep(c("sep48hrs")))
+sep4wks_cs <- mutate_at(sep4wks_cs, vars(Animal, PairingType, Comparison), as.factor) %>% mutate("Condition" = rep(c("sep4wks")))
+
+#remove animal 5320 because it spent most of it's time by itself.
+sep4wks_cs <- sep4wks_cs %>% filter(Animal != "5320")
+
+#re-level for plotting
+rp_cs$Comparison <- factor(rp_cs$Comparison, levels = c("base:48hrs", "base:4wks"))
+sep48hrs_cs$Comparison <- factor(sep48hrs_cs$Comparison, levels = c("base:48hrs", "base:4wks"))
+sep4wks_cs$Comparison <- factor(sep4wks_cs$Comparison, levels = c("base:48hrs", "base:4wks"))
+
+rp_cs_48hrs <- rp_cs %>% filter(Comparison == "base:48hrs")
+rp_cs_4wks <- rp_cs %>% filter(Comparison == "base:4wks")
+
+#combine all into one dataframe
+all_cs <- rbind(rp_cs, sep48hrs_cs, sep4wks_cs)
+all_cs_os <- all_cs %>% filter(PairingType == "OS")
+all_cs_ss <- all_cs %>% filter(PairingType == "SS")
+```
+
+plots of change scores
+```{r}
+ggbarplot(all_cs, x = "Comparison", y = "abspHuddle_ChangeScore", add = c("mean_se", "jitter"), position = position_dodge(0.9), color = "Condition") + ylim(-3500, 5000) + geom_hline(yintercept=0, linetype="longdash", color = "black")
+ggbarplot(all_cs, x = "Comparison", y = "pHuddle_ChangeScore", add = c("mean_se", "jitter"), position = position_dodge(0.9), color = "Condition") + geom_hline(yintercept=0, linetype="longdash", color = "black")
+
+ggviolin(all_cs_os, x = "Comparison", y = "pHuddle_ChangeScore", draw_quantiles = 0.5, add = c("jitter"), position = position_dodge(0.9), color = "Condition", size = 0.5, point.size = 1, palette = c("black", "#E7B800", "#FC4E07"), trim = TRUE) + geom_hline(yintercept=0, linetype="longdash", color = "black") + ylim(-75, 75)
+ggviolin(all_cs_ss, x = "Comparison", y = "pHuddle_ChangeScore", draw_quantiles = 0.5, add = c("jitter"), position = position_dodge(0.9), color = "Condition", size = 0.5, point.size = 1, palette = c("black", "#E7B800", "#FC4E07"), trim = TRUE) + geom_hline(yintercept=0, linetype="longdash", color = "black") + ylim(-75, 75)
+
+ggviolin(all_cs_os, x = "Comparison", y = "abspHuddle_ChangeScore", draw_quantiles = 0.5, add = c("jitter"), position = position_dodge(0.9), color = "Condition", size = 0.5, point.size = 1, palette = c("black", "#E7B800", "#FC4E07"), trim = TRUE) + geom_hline(yintercept=0, linetype="longdash", color = "black") + ylim(-4000, 6000)
+ggviolin(all_cs_ss, x = "Comparison", y = "abspHuddle_ChangeScore", draw_quantiles = 0.5, add = c("jitter"), position = position_dodge(0.9), color = "Condition", size = 0.5, point.size = 1, palette = c("black", "#E7B800", "#FC4E07"), trim = TRUE) + geom_hline(yintercept=0, linetype="longdash", color = "black") + ylim(-4000, 6000)
+```
+F-test of variance 
+```{r}
+cs_48hrs_os <- all_cs_os %>% filter(Comparison == "base:48hrs")
+cs_48hrs_ss <- all_cs_ss %>% filter(Comparison == "base:48hrs")
+
+cs_4wks_os <- all_cs_os %>% filter(Comparison == "base:4wks")
+cs_4wks_ss <- all_cs_ss %>% filter(Comparison == "base:4wks")
+
+#F test of variance for each time point
+var.test(pHuddle_ChangeScore ~ Condition, cs_48hrs_os, alternative = "two.sided")
+var.test(pHuddle_ChangeScore ~ Condition, cs_48hrs_ss, alternative = "two.sided")
+var.test(pHuddle_ChangeScore ~ Condition, cs_4wks_os, alternative = "two.sided")
+var.test(pHuddle_ChangeScore ~ Condition, cs_4wks_ss, alternative = "two.sided")
+
+#lavene test for non-parametric data
+leveneTest(pHuddle_ChangeScore ~ Condition, data = cs_48hrs_os)
+leveneTest(pHuddle_ChangeScore ~ Condition, data = cs_48hrs_ss)
+leveneTest(pHuddle_ChangeScore ~ Condition, data = cs_4wks_os)
+leveneTest(pHuddle_ChangeScore ~ Condition, data = cs_4wks_ss)
+
+
+leveneTest(abspHuddle_ChangeScore ~ Condition, data = cs_48hrs_os)
+leveneTest(abspHuddle_ChangeScore ~ Condition, data = cs_48hrs_ss)
+leveneTest(abspHuddle_ChangeScore ~ Condition, data = cs_4wks_os)
+leveneTest(abspHuddle_ChangeScore ~ Condition, data = cs_4wks_ss)
+```
+
+t-test against 0 for change scores
+```{r}
+#opposite-sex
+cs_48hrs_os_rp <- cs_48hrs_os %>% filter(Condition == "remainPaired")
+cs_48hrs_os_48hrs <- cs_48hrs_os %>% filter(Condition == "sep48hrs")
+
+cs_4wks_os_rp <- cs_4wks_os %>% filter(Condition == "remainPaired")
+cs_4wks_os_4wks <- cs_4wks_os %>% filter(Condition == "sep4wks")
+
+t.test(cs_48hrs_os_rp$pHuddle_ChangeScore, mu = 0)
+t.test(cs_48hrs_os_rp$abspHuddle_ChangeScore, mu = 0)
+t.test(cs_48hrs_os_48hrs$pHuddle_ChangeScore, mu = 0)
+t.test(cs_48hrs_os_48hrs$abspHuddle_ChangeScore, mu = 0)
+
+t.test(cs_4wks_os_rp$pHuddle_ChangeScore, mu = 0)
+t.test(cs_4wks_os_rp$abspHuddle_ChangeScore, mu = 0)
+t.test(cs_4wks_os_4wks$pHuddle_ChangeScore, mu = 0)
+t.test(cs_4wks_os_4wks$abspHuddle_ChangeScore, mu = 0)
+
+#same-sex
+cs_48hrs_ss_rp <- cs_48hrs_ss %>% filter(Condition == "remainPaired")
+cs_48hrs_ss_48hrs <- cs_48hrs_ss %>% filter(Condition == "sep48hrs")
+
+cs_4wks_ss_rp <- cs_4wks_ss %>% filter(Condition == "remainPaired")
+cs_4wks_ss_4wks <- cs_4wks_ss %>% filter(Condition == "sep4wks")
+
+t.test(cs_48hrs_ss_rp$pHuddle_ChangeScore, mu = 0)
+t.test(cs_48hrs_ss_rp$abspHuddle_ChangeScore, mu = 0)
+t.test(cs_48hrs_ss_48hrs$pHuddle_ChangeScore, mu = 0)
+t.test(cs_48hrs_ss_48hrs$abspHuddle_ChangeScore, mu = 0)
+
+t.test(cs_4wks_ss_rp$pHuddle_ChangeScore, mu = 0)
+t.test(cs_4wks_ss_rp$abspHuddle_ChangeScore, mu = 0)
+t.test(cs_4wks_ss_4wks$pHuddle_ChangeScore, mu = 0)
+t.test(cs_4wks_ss_4wks$abspHuddle_ChangeScore, mu = 0)
+```
+
+stats for partner preference
+```{r}
+#partner preference score
+res.aov.rp.pHuddle <- aov(pHuddle ~ Timepoint*PairingType, data = rp)
+pHud.rp.stats <- BehavStats(res.aov.rp.pHuddle)
+
+res.aov.sep48hrs.pHuddle <- aov(pHuddle ~ Timepoint*PairingType, data = sep48hrs)
+pHud.sep48hrs.stats <- BehavStats(res.aov.sep48hrs.pHuddle)
+
+res.aov.sep4wks.pHuddle <- aov(pHuddle ~ Timepoint*PairingType, data = sep4wks)
+pHud.sep4wks.stats <- BehavStats(res.aov.sep4wks.pHuddle)
+
+#raw time huddling
+#partner
+res.aov.rp.abspHuddle <- aov(abspHuddle ~ Timepoint*PairingType, data = rp)
+abspHud.rp.stats <- BehavStats(res.aov.rp.abspHuddle) #this is significant because at baseline all of the OS pairs have a huddle duration of 2500 sec or less
+
+res.aov.sep48hrs.abspHuddle <- aov(abspHuddle ~ Timepoint*PairingType, data = sep48hrs)
+abspHud.sep48hrs.stats <- BehavStats(res.aov.sep48hrs.abspHuddle)
+
+res.aov.sep4wks.abspHuddle <- aov(abspHuddle ~ Timepoint*PairingType, data = sep4wks)
+abspHud.sep4wks.stats <- BehavStats(res.aov.sep4wks.abspHuddle)
+
+#partner chamber time
+res.aov.rp.pCTOnly <- aov(pCTOnly ~ Timepoint*PairingType, data = rp)
+pCTOnly.rp.stats <- BehavStats(res.aov.rp.pCTOnly)
+res.aov.sep48hrs.pCTOnly <- aov(pCTOnly ~ Timepoint*PairingType, data = sep48hrs)
+pCTOnly.sep48hrs.stats <- BehavStats(res.aov.sep48hrs.pCTOnly)
+res.aov.sep4wks.pCTOnly <- aov(pCTOnly ~ Timepoint*PairingType, data = sep4wks)
+pCTOnly.sep4wks.stats <- BehavStats(res.aov.sep4wks.pCTOnly)
+
+#novel
+res.aov.rp.absnHuddle <- aov(absnHuddle ~ Timepoint*PairingType, data = rp)
+absnHud.rp.stats <- BehavStats(res.aov.rp.absnHuddle)
+
+res.aov.sep48hrs.absnHuddle <- aov(absnHuddle ~ Timepoint*PairingType, data = sep48hrs)
+absnHud.sep48hrs.stats <- BehavStats(res.aov.sep48hrs.absnHuddle)
+
+res.aov.sep4wks.absnHuddle <- aov(absnHuddle ~ Timepoint*PairingType, data = sep4wks)
+absnHud.sep4wks.stats <- BehavStats(res.aov.sep4wks.absnHuddle)
+
+#novel chamber time
+res.aov.rp.nCTOnly <- aov(nCTOnly ~ Timepoint*PairingType, data = rp)
+nCTOnly.rp.stats <- BehavStats(res.aov.rp.nCTOnly)
+res.aov.sep48hrs.nCTOnly <- aov(nCTOnly ~ Timepoint*PairingType, data = sep48hrs)
+nCTOnly.sep48hrs.stats <- BehavStats(res.aov.sep48hrs.nCTOnly)
+res.aov.sep4wks.nCTOnly <- aov(nCTOnly ~ Timepoint*PairingType, data = sep4wks)
+nCTOnly.sep4wks.stats <- BehavStats(res.aov.sep4wks.nCTOnly)
+
+#percent partner huddle relative to 50%
+t.test(rp_matrix_os$pHuddleBase, mu = 50)
+t.test(rp_matrix_os$pHuddle48hrs, mu = 50)
+t.test(rp_matrix_os$pHuddle4wks, mu = 50)
+t.test(sep48hrs_matrix_os$pHuddleBase, mu = 50)
+t.test(sep48hrs_matrix_os$pHuddleEnd, mu = 50)
+t.test(sep4wks_matrix_os$pHuddleBase, mu = 50)
+t.test(sep4wks_matrix_os$pHuddleEnd, mu = 50)
+
+t.test(rp_matrix_ss$pHuddleBase, mu = 50)
+t.test(rp_matrix_ss$pHuddle48hrs, mu = 50)
+t.test(rp_matrix_ss$pHuddle4wks, mu = 50)
+t.test(sep48hrs_matrix_ss$pHuddleBase, mu = 50)
+t.test(sep48hrs_matrix_ss$pHuddleEnd, mu = 50)
+t.test(sep4wks_matrix_ss$pHuddleBase, mu = 50)
+t.test(sep4wks_matrix_ss$pHuddleEnd, mu = 50)
+```
+
+
+Get latency data for Remain Paired animals
+```{r}
+#get partner latencies
+pLat_RPbase_C1_excel <- partner_Latencies("{dir}/2022_09_08_eLife_RemainPaired_baseline_C1_trialExport.xlsx")
+pLat_RP48hrs_C1_excel <- partner_Latencies("{dir}/2022_09_10_eLife_RemainPaired_48hrs_C1_trialExport.xlsx")
+pLat_RP4wks_C1_excel <- partner_Latencies("{dir}/2022_10_06_eLife_RemainPaired_4wksTP_C1_trialExport.xlsx")
+pLat_RPbase_C2_excel <- partner_Latencies("{dir}/2022_11_21_eLife_RemainPaired_baseline_C2_trialExport.xlsx")
+pLat_RP48hrs_C2_excel <- partner_Latencies("{dir}/2022_11_23_eLife_RemainPaired_48hrsTP_C2_trialExport.xlsx")
+pLat_RP4wks_C2_excel <- partner_Latencies("{dir}/2022_12_19_eLife_RemainPaired_4wks_C2_trialEvent.xlsx")
+
+#get novel latencies
+nLat_RPbase_C1_excel <- novel_Latencies("{dir}/2022_09_08_eLife_RemainPaired_baseline_C1_trialExport.xlsx")
+nLat_RP48hrs_C1_excel <- novel_Latencies("{dir}/2022_09_10_eLife_RemainPaired_48hrs_C1_trialExport.xlsx")
+nLat_RP4wks_C1_excel <- novel_Latencies("{dir}/2022_10_06_eLife_RemainPaired_4wksTP_C1_trialExport.xlsx")
+nLat_RPbase_C2_excel <- novel_Latencies("{dir}/2022_11_21_eLife_RemainPaired_baseline_C2_trialExport.xlsx")
+nLat_RP48hrs_C2_excel <- novel_Latencies("{dir}/2022_11_23_eLife_RemainPaired_48hrsTP_C2_trialExport.xlsx")
+nLat_RP4wks_C2_excel <- novel_Latencies("{dir}/2022_12_19_eLife_RemainPaired_4wks_C2_trialEvent.xlsx")
+``` 
+analyze remain paired latency data
+```{r}
+#partner latencies 
+pLat_RPbase_C1 <- get_latency(pLat_RPbase_C1_excel, "baseline")
+pLat_RP48hrs_C1 <- get_latency(pLat_RP48hrs_C1_excel, "48hrs")
+pLat_RP4wks_C1 <- get_latency(pLat_RP4wks_C1_excel, "4wks")
+pLat_RPbase_C2 <- get_latency(pLat_RPbase_C2_excel, "baseline")
+pLat_RP48hrs_C2 <- get_latency(pLat_RP48hrs_C2_excel, "48hrs")
+pLat_RP4wks_C2 <- get_latency(pLat_RP4wks_C2_excel, "4wks")
+
+#novel latencies
+nLat_RPbase_C1 <- get_latency(nLat_RPbase_C1_excel, "baseline")
+nLat_RP48hrs_C1 <- get_latency(nLat_RP48hrs_C1_excel, "48hrs")
+nLat_RP4wks_C1 <- get_latency(nLat_RP4wks_C1_excel, "4wks")
+nLat_RPbase_C2 <- get_latency(nLat_RPbase_C2_excel, "baseline")
+nLat_RP48hrs_C2 <- get_latency(nLat_RP48hrs_C2_excel, "48hrs")
+nLat_RP4wks_C2 <- get_latency(nLat_RP4wks_C2_excel, "4wks")
+
+#merge all latencies and add column for stimulus animal
+pLat_RP <- rbind(pLat_RPbase_C1, pLat_RPbase_C2, pLat_RP48hrs_C1, pLat_RP48hrs_C2, pLat_RP4wks_C1, pLat_RP4wks_C2)
+nLat_RP <- rbind(nLat_RPbase_C1, nLat_RPbase_C2, nLat_RP48hrs_C1, nLat_RP48hrs_C2, nLat_RP4wks_C1, nLat_RP4wks_C2)
+
+partner <- rep(c("partner"), times = nrow(pLat_RP))
+novel <- rep(c("novel"), times = nrow(nLat_RP))
+
+pLat_RP <- cbind(pLat_RP, partner) %>% dplyr::rename("stimulus" = 4)
+nLat_RP <- cbind(nLat_RP, novel) %>% dplyr::rename("stimulus" = 4)
+
+#combine into latency df for each condition
+Latencies <- rbind(pLat_RP, nLat_RP)
+Latencies <- mutate_at(Latencies, vars(Animal, Timepoint, stimulus), as.factor) %>% replace(is.na(.), 10800)
+
+#merge latency data into dfs for plotting with the rest of the animal information. I'm using the huddles dfs made above because they're already in tidy format. 
+rp_lat_plotting <- left_join(rp_allHuddles, Latencies, by = c("Animal", "stimulus", "Timepoint"))
+```
+
+Get latency data for 48hrs separated animals
+```{r}
+#get partner latencies
+pLat_48hrsBase_C1_excel <- partner_Latencies("{dir}/2022_10_17_eLife_48hrs_baseline_C1_use_trialExport.xlsx")
+pLat_48hrsEnd_C1_excel <- partner_Latencies("{dir}/2022_10_19_eLife_48hrs_endpoint_C1_trialExport.xlsx")
+pLat_48hrsBase_C2_excel <- partner_Latencies("{dir}/2022_11_18_eLife_48hrsSep_baseline_C2_trialExport.xlsx")
+pLat_48hrsEnd_C2_excel <- partner_Latencies("{dir}/2022_11_20_eLife_48hrsSep_endpoint_C2_trialExport.xlsx")
+
+
+#get novel latencies
+nLat_48hrsBase_C1_excel <- novel_Latencies("{dir}/2022_10_17_eLife_48hrs_baseline_C1_use_trialExport.xlsx")
+nLat_48hrsEnd_C1_excel <- novel_Latencies("{dir}/2022_10_19_eLife_48hrs_endpoint_C1_trialExport.xlsx")
+nLat_48hrsBase_C2_excel <- novel_Latencies("{dir}/2022_11_18_eLife_48hrsSep_baseline_C2_trialExport.xlsx")
+nLat_48hrsEnd_C2_excel <- novel_Latencies("{dir}/2022_11_20_eLife_48hrsSep_endpoint_C2_trialExport.xlsx")
+``` 
+
+analyze 48hrs separated latency data
+```{r}
+#partner latencies 
+pLat_48hrsBase_C1 <- get_latency(pLat_48hrsBase_C1_excel, "baseline")
+pLat_48hrsEnd_C1 <- get_latency(pLat_48hrsEnd_C1_excel, "endpoint")
+
+pLat_48hrsBase_C2 <- get_latency(pLat_48hrsBase_C2_excel, "baseline")
+pLat_48hrsEnd_C2 <- get_latency(pLat_48hrsEnd_C2_excel, "endpoint")
+
+
+#novel latencies
+nLat_48hrsBase_C1 <- get_latency(nLat_48hrsBase_C1_excel, "baseline")
+nLat_48hrsEnd_C1 <- get_latency(nLat_48hrsEnd_C1_excel, "endpoint")
+
+nLat_48hrsBase_C2 <- get_latency(nLat_48hrsBase_C2_excel, "baseline")
+nLat_48hrsEnd_C2 <- get_latency(nLat_48hrsEnd_C2_excel, "endpoint")
+
+
+#merge all latencies and add column for stimulus animal
+pLat_48hrs <- rbind(pLat_48hrsBase_C1, pLat_48hrsBase_C2, pLat_48hrsEnd_C1, pLat_48hrsEnd_C2)
+nLat_48hrs <- rbind(nLat_48hrsBase_C1, nLat_48hrsBase_C2, nLat_48hrsEnd_C1, nLat_48hrsEnd_C2)
+
+partner <- rep(c("partner"), times = nrow(pLat_48hrs))
+novel <- rep(c("novel"), times = nrow(nLat_48hrs))
+
+pLat_48hrs <- cbind(pLat_48hrs, partner) %>% dplyr::rename("stimulus" = 4)
+nLat_48hrs <- cbind(nLat_48hrs, novel) %>% dplyr::rename("stimulus" = 4)
+
+#combine into latency df for each condition
+Latencies <- rbind(pLat_48hrs, nLat_48hrs)
+Latencies <- mutate_at(Latencies, vars(Animal, Timepoint, stimulus), as.factor) %>% replace(is.na(.), 10800)
+
+#merge latency data into dfs for plotting with the rest of the animal information. I'm using the huddles dfs made above because they're already in tidy format.
+sep48hrs_lat_plotting <- left_join(sep48hrs_huddles, Latencies, by = c("Animal", "stimulus", "Timepoint"))
+```
+
+Get latency data for 4wks separated animals
+```{r}
+#get partner latencies
+pLat_4wksBase_C1_excel <- partner_Latencies("{dir}/2022_09_22_eLife_4wksSep_baseline_C1_trialExport.xlsx")
+pLat_4wksEnd_C1_excel <- partner_Latencies("{dir}/2022_10_21_eLife_4wks_endpoint_C1_trialExport.xlsx")
+pLat_4wksBase_C2_excel <- partner_Latencies("{dir}/2022_11_22_eLife_4wksSep_baseline_C2_trialExport.xlsx")
+pLat_4wksEnd_C2_excel <- partner_Latencies("{dir}/2022_12_20_eLife_4wksSep_endpoint_C2_trialExport.xlsx")
+
+
+#get novel latencies
+nLat_4wksBase_C1_excel <- novel_Latencies("{dir}/2022_09_22_eLife_4wksSep_baseline_C1_trialExport.xlsx")
+nLat_4wksEnd_C1_excel <- novel_Latencies("{dir}/2022_10_21_eLife_4wks_endpoint_C1_trialExport.xlsx")
+nLat_4wksBase_C2_excel <- novel_Latencies("{dir}/2022_11_22_eLife_4wksSep_baseline_C2_trialExport.xlsx")
+nLat_4wksEnd_C2_excel <- novel_Latencies("{dir}/2022_12_20_eLife_4wksSep_endpoint_C2_trialExport.xlsx")
+``` 
+
+analyze 4wks separated latency data
+```{r}
+#partner latencies 
+pLat_4wksBase_C1 <- get_latency(pLat_4wksBase_C1_excel, "baseline")
+pLat_4wksEnd_C1 <- get_latency(pLat_4wksEnd_C1_excel, "endpoint")
+
+pLat_4wksBase_C2 <- get_latency(pLat_4wksBase_C2_excel, "baseline")
+pLat_4wksEnd_C2 <- get_latency(pLat_4wksEnd_C2_excel, "endpoint")
+
+
+#novel latencies
+nLat_4wksBase_C1 <- get_latency(nLat_4wksBase_C1_excel, "baseline")
+nLat_4wksEnd_C1 <- get_latency(nLat_4wksEnd_C1_excel, "endpoint")
+
+nLat_4wksBase_C2 <- get_latency(nLat_4wksBase_C2_excel, "baseline")
+nLat_4wksEnd_C2 <- get_latency(nLat_4wksEnd_C2_excel, "endpoint")
+
+
+#merge all latencies and add column for stimulus animal
+pLat_4wks <- rbind(pLat_4wksBase_C1, pLat_4wksBase_C2, pLat_4wksEnd_C1, pLat_4wksEnd_C2)
+nLat_4wks <- rbind(nLat_4wksBase_C1, nLat_4wksBase_C2, nLat_4wksEnd_C1, nLat_4wksEnd_C2)
+
+partner <- rep(c("partner"), times = nrow(pLat_4wks))
+novel <- rep(c("novel"), times = nrow(nLat_4wks))
+
+pLat_4wks <- cbind(pLat_4wks, partner) %>% dplyr::rename("stimulus" = 4)
+nLat_4wks <- cbind(nLat_4wks, novel) %>% dplyr::rename("stimulus" = 4)
+
+#combine into latency df for each condition
+Latencies <- rbind(pLat_4wks, nLat_4wks)
+Latencies <- mutate_at(Latencies, vars(Animal, Timepoint, stimulus), as.factor) %>% replace(is.na(.), 10800)
+
+#merge latency data into dfs for plotting with the rest of the animal information. I'm using the huddles dfs made above because they're already in tidy format.
+sep4wks_lat_plotting <- left_join(sep4wks_huddles, Latencies, by = c("Animal", "stimulus", "Timepoint"))
+```
+
+make partner latency dfs of OS and SS separately and add a "start" column for cumulative event plotting below
+```{r}
+#partner latencies
+rp_pLat_os_plotting <- rp_lat_plotting %>% filter(PairingType == "OS" & stimulus == "partner") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+rp_pLat_ss_plotting <- rp_lat_plotting %>% filter(PairingType == "SS" & stimulus == "partner") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+sep48hrs_pLat_os_plotting <- sep48hrs_lat_plotting %>% filter(PairingType == "OS" & stimulus == "partner") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+sep48hrs_pLat_ss_plotting <- sep48hrs_lat_plotting %>% filter(PairingType == "SS" & stimulus == "partner") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+sep4wks_pLat_os_plotting <- sep4wks_lat_plotting %>% filter(PairingType == "OS" & stimulus == "partner") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+sep4wks_pLat_ss_plotting <- sep4wks_lat_plotting %>% filter(PairingType == "SS" & stimulus == "partner") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+```
+
+make novel latency dfs of OS and SS separately and add a "start" column for cumulative event plotting below
+```{r}
+#partner latencies
+rp_nLat_os_plotting <- rp_lat_plotting %>% filter(PairingType == "OS" & stimulus == "novel") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+rp_nLat_ss_plotting <- rp_lat_plotting %>% filter(PairingType == "SS" & stimulus == "novel") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+sep48hrs_nLat_os_plotting <- sep48hrs_lat_plotting %>% filter(PairingType == "OS" & stimulus == "novel") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+sep48hrs_nLat_ss_plotting <- sep48hrs_lat_plotting %>% filter(PairingType == "SS" & stimulus == "novel") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+sep4wks_nLat_os_plotting <- sep4wks_lat_plotting %>% filter(PairingType == "OS" & stimulus == "novel") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+sep4wks_nLat_ss_plotting <- sep4wks_lat_plotting %>% filter(PairingType == "SS" & stimulus == "novel") %>% mutate(start = 1) %>% dplyr::rename("Latency" = "Latency(sec)") %>% relevel_Timepoint()
+```
+
+
+plot partner Latency data
+```{r}
+#remain paired
+fit_rp_os_pLat <- survfit(Surv(Latency, start) ~ Timepoint, data = rp_pLat_os_plotting)
+ggsurvplot(fit_rp_os_pLat, palette = c("#324448", "#324448", "#324448"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+fit_rp_ss_pLat <- survfit(Surv(Latency, start) ~ Timepoint, data = rp_pLat_ss_plotting)
+ggsurvplot(fit_rp_ss_pLat, palette = c("#b6cdb1", "#b6cdb1", "#b6cdb1"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+#48 hrs separated
+fit_sep48hrs_os_pLat <- survfit(Surv(Latency, start) ~ Timepoint, data = sep48hrs_pLat_os_plotting)
+ggsurvplot(fit_sep48hrs_os_pLat, palette = c("#324448", "#324448", "#324448"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+fit_sep48hrs_ss_pLat <- survfit(Surv(Latency, start) ~ Timepoint, data = sep48hrs_pLat_ss_plotting)
+ggsurvplot(fit_sep48hrs_ss_pLat, palette = c("#b6cdb1", "#b6cdb1", "#b6cdb1"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+#4 weeks separated
+fit_sep4wks_os_pLat <- survfit(Surv(Latency, start) ~ Timepoint, data = sep4wks_pLat_os_plotting)
+ggsurvplot(fit_sep4wks_os_pLat, palette = c("#324448", "#324448", "#324448"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+fit_sep4wks_ss_pLat <- survfit(Surv(Latency, start) ~ Timepoint, data = sep4wks_pLat_ss_plotting)
+ggsurvplot(fit_sep4wks_ss_pLat, palette = c("#b6cdb1", "#b6cdb1", "#b6cdb1"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+```
+plot novel Latency data
+```{r}
+#remain paired
+fit_rp_os_nLat <- survfit(Surv(Latency, start) ~ Timepoint, data = rp_nLat_os_plotting)
+ggsurvplot(fit_rp_os_nLat, palette = c("#324448", "#324448", "#324448"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+fit_rp_ss_nLat <- survfit(Surv(Latency, start) ~ Timepoint, data = rp_nLat_ss_plotting)
+ggsurvplot(fit_rp_ss_nLat, palette = c("#b6cdb1", "#b6cdb1", "#b6cdb1"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+#48 hrs separated
+fit_sep48hrs_os_nLat <- survfit(Surv(Latency, start) ~ Timepoint, data = sep48hrs_nLat_os_plotting)
+ggsurvplot(fit_sep48hrs_os_nLat, palette = c("#324448", "#324448", "#324448"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+fit_sep48hrs_ss_nLat <- survfit(Surv(Latency, start) ~ Timepoint, data = sep48hrs_nLat_ss_plotting)
+ggsurvplot(fit_sep48hrs_ss_nLat, palette = c("#b6cdb1", "#b6cdb1", "#b6cdb1"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+#4 weeks separated
+fit_sep4wks_os_nLat <- survfit(Surv(Latency, start) ~ Timepoint, data = sep4wks_nLat_os_plotting)
+ ggsurvplot(fit_sep4wks_os_nLat, palette = c("#324448", "#324448", "#324448"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+
+fit_sep4wks_ss_nLat <- survfit(Surv(Latency, start) ~ Timepoint, data = sep4wks_nLat_ss_plotting)
+ggsurvplot(fit_sep4wks_ss_nLat, palette = c("#b6cdb1", "#b6cdb1", "#b6cdb1"), linetype = c(1, 6, 9), fun = "event", pval = TRUE, xlim = c(0, 600), break.time.by = 700, break.x.by = 100)
+```
+
+statistics for remain paired latency plots
+```{r}
+survdiff(Surv(Latency, start) ~ Timepoint, data = rp_pLat_os_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = rp_pLat_ss_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = rp_nLat_os_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = rp_nLat_ss_plotting)
+
+res_rp_os_pLat <- pairwise_survdiff(Surv(Latency, start) ~ Timepoint, data = rp_pLat_os_plotting, p.adjust.method = "fdr")
+res_rp_ss_pLat <- pairwise_survdiff(Surv(Latency, start) ~ Timepoint, data = rp_pLat_ss_plotting, p.adjust.method = "fdr")
+
+res_rp_os_nLat <- pairwise_survdiff(Surv(Latency, start) ~ Timepoint, data = rp_nLat_os_plotting, p.adjust.method = "fdr")
+res_rp_ss_nLat <- pairwise_survdiff(Surv(Latency, start) ~ Timepoint, data = rp_nLat_ss_plotting, p.adjust.method = "fdr")
+
+res_rp_os_pLat
+res_rp_ss_pLat
+res_rp_os_nLat
+res_rp_ss_nLat
+```
+other stats for the latency plots
+```{r}
+survdiff(Surv(Latency, start) ~ Timepoint, data = sep48hrs_pLat_os_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = sep48hrs_nLat_os_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = sep48hrs_pLat_ss_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = sep48hrs_nLat_ss_plotting)
+
+survdiff(Surv(Latency, start) ~ Timepoint, data = sep4wks_pLat_os_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = sep4wks_nLat_os_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = sep4wks_pLat_ss_plotting)
+survdiff(Surv(Latency, start) ~ Timepoint, data = sep4wks_nLat_ss_plotting)
+```
+
+make dfs for correlations
+```{r}
+rp_matrix_os <- rp_matrix_os %>% column_to_rownames("Animal") %>% select(-PairingType)
+rp_matrix_ss <- rp_matrix_ss %>% column_to_rownames("Animal") %>% select(-PairingType)
+
+sep48hrs_matrix_os <- sep48hrs_matrix_os %>% column_to_rownames("Animal") %>% select(-PairingType)
+sep48hrs_matrix_ss <- sep48hrs_matrix_ss %>% column_to_rownames("Animal") %>% select(-PairingType)
+
+sep4wks_matrix_os <- sep4wks_matrix_os %>% column_to_rownames("Animal") %>% select(-PairingType)
+sep4wks_matrix_ss <- sep4wks_matrix_ss %>% column_to_rownames("Animal") %>% select(-PairingType)
+
+```
+
+plot and save correlation plots
+```{r}
+corr_plotting(rp_matrix_os, "yes", "Remain paired OS PPT correlation")
+corr_plotting(rp_matrix_ss, "yes", "Remain paired SS PPT correlation")
+corr_plotting(sep48hrs_matrix_os, "yes", "Separated 48hrs OS PPT correlation")
+corr_plotting(sep48hrs_matrix_ss, "yes", "Separated 48hrs SS PPT correlation")
+corr_plotting(sep4wks_matrix_os, "yes", "Separated 4wks OS PPT correlation")
+corr_plotting(sep4wks_matrix_ss, "yes", "Separated 4wks SS PPT correlation")
+```
+
+plot and save correlation plots that are clustered
+```{r}
+clust_corr_plotting(rp_matrix_os, "yes", "Remain paired OS PPT correlation")
+clust_corr_plotting(rp_matrix_ss, "yes", "Remain paired SS PPT correlation")
+clust_corr_plotting(sep48hrs_matrix_os, "yes", "Separated 48hrs OS PPT correlation")
+clust_corr_plotting(sep48hrs_matrix_ss, "yes", "Separated 48hrs SS PPT correlation")
+clust_corr_plotting(sep4wks_matrix_os, "yes", "Separated 4wks OS PPT correlation")
+clust_corr_plotting(sep4wks_matrix_ss, "yes", "Separated 4wks SS PPT correlation")
+```

@@ -1,0 +1,267 @@
+---
+title: "TRAP GO analysis"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Table of contents 
+1. DESeq with only TRAP samples 
+  i. looking at Inputs vs Pulldown
+  ii. OS4I vs SS4I Pulldowns only
+2. Save DEGs
+3. Volcano plots of DESeq
+3. GO analysis for:
+  i. Inputs vs Pulldowns
+  ii. OSvSS4I Pulldowns only
+  I hand selected GO terms
+
+load libraries 
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggfortify)
+library(ggrepel)
+library(GGally)
+library(wesanderson)
+library(viridis)
+library(readxl)
+library(car)
+library(gridExtra)
+library(ez)
+library(ggpubr)
+library(DESeq2)
+library(EnhancedVolcano)
+library(RRHO2)
+library(DOSE)
+library(enrichplot)
+library(ggpubr)
+library(org.Mm.eg.db) #mouse genome data
+library(clusterProfiler)
+library(UpSetR)
+library(scales)
+library(heatmap3)
+library(pheatmap)
+source("{dir}/convert_voleToMouse_geneIDs.R")
+source("{dir}/plot_GOanlaysis.R")
+```
+
+
+import data
+```{r}
+TRAP_samples <- read.csv("{dir}/Merged TRAP.Inputs.Pulldowns.txt") 
+TRAP_samples <- TRAP_samples %>% distinct(genes, .keep_all = TRUE) %>% filter(!is.na(genes)) %>% column_to_rownames("genes") %>% filter_all(all_vars(.>10))
+TRAP_samples_pulldownsonly <- TRAP_samples %>% select(-contains("I"))
+TRAP_samples_pulldownsonly <- TRAP_samples_pulldownsonly %>% column_to_rownames("genes")
+
+TRAPonly_metrics <- read_excel("{dir}/all_RNAseq_metrics.xlsx", sheet = "TRAP samples only CO")
+TRAPonly_metrics <- mutate_at(TRAPonly_metrics, vars("Animal", "Cohort", "Pairing", "Timepoint", "Separation", "ProcessingGroup", "PartnerPreference", "DissectionOrder", "ParentCode", "RIN", "InputRNA", "AgeAtPairing", "AgeAtSAC", "IorP", "PairingAgeCat"), as.factor)
+
+#making metrics for only pulldown samples, rows 21:40
+metrics_pulldownsonly <- TRAPonly_metrics[c(21:40),]
+```
+run DESeq to compare all Inputs to all Pulldowns
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = all_samples, colData = metrics, design = ~ParentCode + PairingAgeCat + IorP)
+dds <- DESeq(dds)
+res <- results(dds, contrast = c("IorP", "Pulldown", "Input"), alpha = 0.05, pAdjustMethod = "fdr")
+res.df <- as.data.frame(res) %>% rownames_to_column("genes")
+```
+
+
+make dfs of DEGs
+```{r}
+up <- res.df %>% filter(log2FoldChange>0.30) %>% filter(pvalue < 0.05)
+up.genes <- as.data.frame(up$genes) %>% dplyr::rename("genes" = 1)
+down <- res.df %>% filter(log2FoldChange<(-0.30)) %>% filter(pvalue < 0.05)
+down.genes <- as.data.frame(down$genes) %>% dplyr::rename("genes" = 1)
+
+#for GO analysis
+go.up <- up %>% column_to_rownames("genes")
+go.down <- down %>% column_to_rownames("genes")
+
+#save TRAP Pulldowns vs all Inputs DEGs
+```
+
+DESeq of OS4I vs OS4P
+```{r}
+dds.OSIvP <- DESeqDataSetFromMatrix(countData = TRAP_samples_pulldownsonly, colData = metrics_pulldownsonly, design = ~ParentCode + Cohort)
+dds.OSIvP <- DESeq(dds.OSIvP)
+res.OSIvP <- results(dds.OSIvP, contrast = c("Cohort", "OS4I", "OS4P"), alpha = 0.05, pAdjustMethod = "fdr")
+res.OSIvP.df <- as.data.frame(res.OSIvP) %>% rownames_to_column("genes")
+```
+
+make dfs of DEGs
+```{r}
+up.OSIvP <- res.OSIvP.df %>% filter(log2FoldChange>0.30) %>% filter(pvalue < 0.05)
+up.OSIvP.genes <- as.data.frame(up.OSIvP$genes) %>% dplyr::rename("genes" = 1)
+down.OSIvP <- res.OSIvP.df %>% filter(log2FoldChange<(-0.30)) %>% filter(pvalue < 0.05)
+down.OSIvP.genes <- as.data.frame(down.OSIvP$genes) %>% dplyr::rename("genes" = 1)
+
+#for GO analysis
+go.up.OSIvP <- up.OSIvP %>% column_to_rownames("genes")
+go.down.OSIvP <- down.OSIvP %>% column_to_rownames("genes")
+
+#save TRAP Pulldowns OS4I vs OS4P
+```
+
+
+DESeq of OS4I vs SS4I
+```{r}
+dds.OSvSS4I <- DESeqDataSetFromMatrix(countData = TRAP_samples_pulldownsonly, colData = metrics_pulldownsonly, design = ~ParentCode + Cohort)
+dds.OSvSS4I <- DESeq(dds.OSvSS4I)
+res.OSvSS4I <- results(dds.OSvSS4I, contrast = c("Cohort", "OS4I", "SS4I"), alpha = 0.05, pAdjustMethod = "fdr")
+res.OSvSS4I.df <- as.data.frame(res.OSvSS4I) %>% rownames_to_column("genes")
+
+#save results df for Pulldowns of OSvSS4I
+```
+
+make dfs of DEGs
+```{r}
+up.OSvSS4I <- res.OSvSS4I.df %>% filter(log2FoldChange>0.30) %>% filter(pvalue < 0.05)
+up.OSvSS4I.genes <- as.data.frame(up.OSvSS4I$genes) %>% dplyr::rename("genes" = 1)
+down.OSvSS4I <- res.OSvSS4I.df %>% filter(log2FoldChange<(-0.30)) %>% filter(pvalue < 0.05)
+down.OSvSS4I.genes <- as.data.frame(down.OSvSS4I$genes) %>% dplyr::rename("genes" = 1)
+
+#for GO analysis
+go.up.OSvSS4I <- up.OSvSS4I %>% column_to_rownames("genes")
+go.down.OSvSS4I <- down.OSvSS4I %>% column_to_rownames("genes")
+
+#save TRAP Pulldowns OS4I vs SS4I
+```
+
+volcano plots
+```{r}
+EnhancedVolcano(res, lab = NA, x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) 
+
+EnhancedVolcano(res.OSvSS4I, lab = NA, x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) 
+
+EnhancedVolcano(res.OSIvP, lab = NA, x = "log2FoldChange", y = "pvalue", FCcutoff = 0.30, pCutoff = 0.05, col = c("gray70", "gray70", "gray70", "#F21A00"), title = NULL, subtitle = NULL, caption = NULL, border = "full", borderColour = "black", pointSize = 1, cutoffLineWidth = 0.25, labSize = 2, legendPosition = "none", gridlines.major = FALSE, gridlines.minor = FALSE, colAlpha = 0.75) + theme(axis.title.x = element_text(size =10), axis.text.x = element_text(size = 8), axis.title.y = element_text(size =10), axis.text.y = element_text(size =8))
+ggsave("Pulldowns of OS4IvOS4P.pdf", width = 4, height = 2.5)
+```
+
+GO analysis
+import mouse genome for converting ids
+```{r}
+mart_export_PVEnsembl_mouseEnsembl_mousegeneName <- read.csv("{dir}/mart_export_PVEnsembl_mouseEnsembl_mousegeneName.txt", stringsAsFactors=FALSE)
+
+#getting a biomart df that only contains rows that have mouse stable IDs 
+biomart_mouseE <- filter(mart_export_PVEnsembl_mouseEnsembl_mousegeneName, trimws(Mouse.gene.stable.ID) !="")
+```
+
+DEGs dfs for GO that are made above
+```{r}
+#Pulldowns vs Inputs 
+go.up <- go.up %>% rownames_to_column("genes")
+go.down <- go.down %>% rownames_to_column("genes") 
+
+#OS4I vs OS4P pulldowns
+go.up.OSIvP <- go.up.OSIvP %>% rownames_to_column("genes")
+go.down.OSIvP <- go.down.OSIvP %>% rownames_to_column("genes")
+
+#OS4I vs SS4I pulldowns 
+go.up.OSvSS4I <- go.up.OSvSS4I %>% rownames_to_column("genes")
+go.down.OSvSS4I <- go.down.OSvSS4I %>% rownames_to_column("genes")
+```
+
+convert vole gene ids to mouse gene ids
+```{r}
+go.up.IvP <- vole_to_mouse(go.up)
+go.down.IvP <- vole_to_mouse(go.down)
+go.up.OSvSS4I <- vole_to_mouse(go.up.OSvSS4I)
+go.down.OSvSS4I <- vole_to_mouse(go.down.OSvSS4I)
+go.up.OSIvP <- vole_to_mouse(go.up.OSIvP)
+go.down.OSIvP <- vole_to_mouse(go.down.OSIvP)
+```
+
+make GO term plots for all 6 DEG lists
+```{r, fig.width= 10}
+#convert mouse ENSEMBL ids to ENTREZID ids
+go.up.convert <- bitr(go.up.IvP$mouse.genes, fromType = "ENSEMBL", toType = c("ENTREZID"), OrgDb = org.Mm.eg.db)
+go.down.convert <- bitr(go.down.IvP$mouse.genes, fromType = "ENSEMBL", toType = c("ENTREZID"), OrgDb = org.Mm.eg.db)
+go.up.OSIvP.convert <- bitr(go.up.OSIvP$mouse.genes, fromType = "ENSEMBL", toType = c("ENTREZID"), OrgDb = org.Mm.eg.db)
+go.down.OSIvP.convert <- bitr(go.down.OSIvP$mouse.genes, fromType = "ENSEMBL", toType = c("ENTREZID"), OrgDb = org.Mm.eg.db)
+go.up.OSvSS4I.convert <- bitr(go.up.OSvSS4I$mouse.genes, fromType = "ENSEMBL", toType = c("ENTREZID"), OrgDb = org.Mm.eg.db)
+go.down.OSvSS4I.convert <- bitr(go.down.OSvSS4I$mouse.genes, fromType = "ENSEMBL", toType = c("ENTREZID"), OrgDb = org.Mm.eg.db)
+
+#run GO analysis 
+go.up.plot.bp <- enrichGO(go.up.convert$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr")
+go.down.plot.bp <- enrichGO(go.down.convert$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr")
+go.up.OSIvP.plot.bp <- enrichGO(go.up.OSIvP.convert$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr")
+go.down.OSIvP.plot.bp <- enrichGO(go.down.OSIvP.convert$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr")
+go.up.OSvSS4I.plot.bp <- enrichGO(go.up.OSvSS4I.convert$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr")
+go.down.OSvSS4I.plot.bp <- enrichGO(go.down.OSvSS4I.convert$ENTREZID, OrgDb = org.Mm.eg.db, pool = TRUE, ont= "BP", pAdjustMethod = "fdr")
+
+#plot 
+barplot(go.up.plot.bp, showCategory = 20) 
+barplot(go.down.plot.bp, showCategory = 20)
+barplot(go.up.OSIvP.plot.bp, showCategory = 20)
+barplot(go.down.OSIvP.plot.bp, showCategory = 20)
+barplot(go.up.OSvSS4I.plot.bp, showCategory = 20)
+barplot(go.down.OSvSS4I.plot.bp, showCategory = 20)
+```
+
+Hand picked GO terms
+```{r, fig.width = 12}
+#make dfs of hand picked terms
+forplot.up.IvP <- IvP.up.plot.bp[c(1:7, 11:13)]
+forplot.up.OSvSS4I <- OSvSS4I.up.plot.bp[c(1:6, 11, 13, 19, 21)]
+forplot.down.IvP <- IvP.down.plot.bp[c(1:4,6,8,9,11,12,14)]
+forplot.down.OSvSS4I <- OSvSS4I.down.plot.bp[c(1:7, 10:12)]
+forplot.down.OSvSS4I.noglia <- OSvSS4I.down.plot.bp[c(1:4,8,9,11,14,15,17)]
+
+#instead of using the GO plots I am exporting the terms and log transformed p-adjusted (fdr) values to morpheus and using that as my GO term plots.
+#dfs for Morpheus plots
+forM_up.IvP <- forplot.up.IvP[["data"]] %>% select(c(2, 6)) %>% mutate(p.adjust = -log10(p.adjust))
+forM_down.IvP <- forplot.down.IvP[["data"]] %>% select(c(2,6)) %>% mutate(p.adjust = -log10(p.adjust))
+forM_up.4I <- forplot.up.OSvSS4I[["data"]] %>% select(c(2,6)) %>% mutate(p.adjust = -log10(p.adjust))
+forM_down.4I <- forplot.down.OSvSS4I.noglia[["data"]] %>% select(c(2,6)) %>% mutate(p.adjust = -log10(p.adjust))
+
+#save csv files and immport in to Morpheus
+```
+
+Now I want to filter the bulk RNAseq of combined pair bond, ST sep, and LT sep by the up and downreg DEGs of the OSvSS4I pulldowns
+import data
+```{r}
+#bulk RNAseq
+allgenes_colPBond <- read.csv("{dir}/Outputs/Data/DEGs/2021_05_11_DESeq/DESeq results_collaspedPBond.txt")
+allgenes_48I <- read.csv("{dir}/Outputs/Data/DEGs/2021_05_11_DESeq/DESeq results_OSvSS48I.txt")
+allgenes_4I <- read.csv("{dir}/Outputs/Data/DEGs/2021_05_11_DESeq/DESeq results_OSvSS4I.txt")
+
+#OSvSS4I DEGs
+OSvSS4I_downreg <- read.csv("{dir}/Outputs/Data/DEGs/2021_05_20_TRAPonly/TRAP pulldowns of OS4I vs SS4I downreg results df.txt")
+OSvSS4I_upreg <- read.csv("{dir}/Outputs/Data/DEGs/2021_05_20_TRAPonly/TRAP pulldowns of OS4I vs SS4I upreg results df.txt")
+```
+
+Filter the "allgenes" dfs by each of the up/downreg dfs of the pulldowns
+```{r}
+upreg4I_colPBond <- allgenes_colPBond %>% filter(genes %in% OSvSS4I_upreg$genes)
+upreg4I_48I <- allgenes_48I %>% filter(genes %in% OSvSS4I_upreg$genes)
+upreg4I_4I <- allgenes_4I %>% filter(genes %in% OSvSS4I_upreg$genes)
+
+downreg4I_colPBond <- allgenes_colPBond %>% filter(genes %in% OSvSS4I_downreg$genes)
+downreg4I_48I <- allgenes_48I %>% filter(genes %in% OSvSS4I_downreg$genes)
+downreg4I_4I <- allgenes_4I %>% filter(genes %in% OSvSS4I_downreg$genes)
+```
+
+Now select just the L2FC column for morpheus
+```{r}
+forM_upreg_colPBond <- upreg4I_colPBond %>% select(c(1,3)) %>% rename("colPBond_L2FC_filteredup4IP" = 2)
+forM_upreg_48I <- upreg4I_48I %>% select(c(1,3)) %>% rename("48I_L2FC_filteredup4IP" = 2)
+forM_upreg_4I <- upreg4I_4I %>% select(c(1,3)) %>% rename("4I_L2FC_filteredup4IP" = 2)
+
+forM_downreg_colPBond <- downreg4I_colPBond %>% select(c(1,3)) %>% rename("colPBond_L2FC_filtereddown4IP" = 2)
+forM_downreg_48I <- downreg4I_48I %>% select(c(1,3)) %>% rename("48I_L2FC_filtereddown4IP" = 2)
+forM_downreg_4I <- downreg4I_4I %>% select(c(1,3)) %>% rename("4I_L2FC_filtereddown4IP" = 2)
+
+#join for morpheus
+forM_upreg_filterOSvSS4Ip <- left_join(forM_upreg_colPBond, forM_upreg_48I, by = "genes")
+forM_upreg_filterOSvSS4Ip <- left_join(forM_upreg_filterOSvSS4Ip, forM_upreg_4I, by = "genes")
+
+forM_downreg_filterOSvSS4Ip <- left_join(forM_downreg_colPBond, forM_downreg_48I, by = "genes")
+forM_downreg_filterOSvSS4Ip <- left_join(forM_downreg_filterOSvSS4Ip, forM_downreg_4I, by = "genes")
+
+#save
+write_csv(forM_upreg_filterOSvSS4Ip, "Bulk colPBond_STsep_LTsep filtered by OSvSS4I pulldowns upreg DEGs.txt")
+write_csv(forM_downreg_filterOSvSS4Ip, "Bulk colPBond_STsep_LTsep filtered by OSvSS4I pulldowns downreg DEGs.txt")
+```
